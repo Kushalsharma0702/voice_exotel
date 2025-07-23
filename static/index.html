@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exotel Call Trigger Dashboard</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f2f5;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .container {
+            background-color: #ffffff;
+            padding: 30px 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            max-width: 500px;
+            width: 100%;
+            text-align: center;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 25px;
+            font-size: 2em;
+            font-weight: 600;
+        }
+        .input-group {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #555;
+        }
+        input[type="text"] {
+            width: calc(100% - 24px); /* Account for padding */
+            padding: 12px;
+            border: 1px solid #ced4da;
+            border-radius: 8px;
+            font-size: 1em;
+            box-sizing: border-box; /* Include padding in width */
+        }
+        button {
+            display: block;
+            width: 100%;
+            padding: 15px 25px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1.1em;
+            font-weight: 600;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+        }
+        button:hover {
+            background-color: #218838;
+            transform: translateY(-2px);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #status {
+            margin-top: 25px;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 0.95em;
+            text-align: left;
+            word-wrap: break-word; /* Ensure long messages break */
+        }
+        #status.info {
+            background-color: #e2f2ff;
+            color: #0056b3;
+            border: 1px solid #a8d4ff;
+        }
+        #status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        #status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Exotel Outbound Call Trigger</h1>
+        <div class="input-group">
+            <label for="customerNumber">Customer Phone Number (E.164 format, e.g., +919876543210):</label>
+            <input type="text" id="customerNumber" value="+917417119104" placeholder="Enter customer's phone number">
+        </div>
+        <button id="triggerCallButton" disabled>Trigger Outbound Call</button>
+        <hr style="margin: 30px 0;">
+        <div class="input-group">
+            <label for="excelFile">Bulk Upload Customers (Excel):</label>
+            <input type="file" id="excelFile" accept=".xls,.xlsx">
+        </div>
+        <button id="uploadExcelButton">Upload & Extract</button>
+        <div id="excelStatus" class="info" style="margin-top: 10px;"></div>
+        <div id="customerTableContainer" style="margin-top: 30px; display:none;">
+            <h2>Extracted Customers</h2>
+            <table id="customerTable" border="1" cellpadding="8" style="border-collapse:collapse; width:100%;">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Loan ID</th>
+                        <th>State</th>
+                        <th>Phone</th>
+                        <th>Amount</th>
+                        <th>Due Date</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+            <button id="callAllButton" style="margin-top:20px; background-color:#007bff;">Call All Customers</button>
+            <div id="callAllStatus" class="info" style="margin-top:10px;"></div>
+        </div>
+        <div id="status" class="info">Connecting to server...</div>
+    </div>
+
+    <script>
+        const customerNumberInput = document.getElementById('customerNumber');
+        const triggerCallButton = document.getElementById('triggerCallButton');
+        const statusDiv = document.getElementById('status');
+        const excelFileInput = document.getElementById('excelFile');
+        const uploadExcelButton = document.getElementById('uploadExcelButton');
+        const excelStatusDiv = document.getElementById('excelStatus');
+        const customerTableContainer = document.getElementById('customerTableContainer');
+        const customerTableBody = document.querySelector('#customerTable tbody');
+        const callAllButton = document.getElementById('callAllButton');
+        const callAllStatusDiv = document.getElementById('callAllStatus');
+        let extractedCustomers = [];
+
+        let ws;
+
+        function updateStatus(message, type = 'info') {
+            statusDiv.textContent = message;
+            statusDiv.className = 'status ' + type;
+        }
+        function updateExcelStatus(message, type = 'info') {
+            excelStatusDiv.textContent = message;
+            excelStatusDiv.className = 'status ' + type;
+        }
+        function updateCallAllStatus(message, type = 'info') {
+            callAllStatusDiv.textContent = message;
+            callAllStatusDiv.className = 'status ' + type;
+        }
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const hostname = window.location.hostname;
+            const port = window.location.port ? `:${window.location.port}` : '';
+            ws = new WebSocket(`${protocol}//${hostname}${port}/ws`);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected.');
+                updateStatus('WebSocket connected. Ready to trigger calls.', 'info');
+                triggerCallButton.disabled = false;
+            };
+
+            ws.onmessage = (event) => {
+                console.log('Message from server:', event.data);
+                if (event.data.includes("Call triggered")) {
+                    updateStatus(event.data, 'success');
+                } else if (event.data.includes("error") || event.data.includes("Failed")) {
+                    updateStatus(event.data, 'error');
+                } else {
+                    updateStatus(event.data, 'info');
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected. Reconnecting in 5 seconds...');
+                updateStatus('WebSocket disconnected. Trying to reconnect...', 'error');
+                triggerCallButton.disabled = true;
+                setTimeout(connectWebSocket, 5000);
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                updateStatus('WebSocket error. Check console for details.', 'error');
+                triggerCallButton.disabled = true;
+            };
+        }
+        connectWebSocket();
+
+        triggerCallButton.addEventListener('click', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const customerNumber = customerNumberInput.value.trim();
+                if (!customerNumber) {
+                    updateStatus('Please enter a customer phone number.', 'error');
+                    return;
+                }
+                updateStatus('Sending call trigger request...', 'info');
+                ws.send(JSON.stringify({
+                    action: "trigger-call",
+                    customer_number: customerNumber
+                }));
+            } else {
+                updateStatus('WebSocket not connected. Please wait or refresh the page.', 'error');
+            }
+        });
+
+        uploadExcelButton.addEventListener('click', async () => {
+            const file = excelFileInput.files[0];
+            if (!file) {
+                updateExcelStatus('Please select an Excel file to upload.', 'error');
+                return;
+            }
+            updateExcelStatus('Uploading and extracting customer details...', 'info');
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const response = await fetch('/upload-customers/', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (data.error) {
+                    updateExcelStatus(data.error, 'error');
+                    customerTableContainer.style.display = 'none';
+                    extractedCustomers = [];
+                } else if (data.customers && data.customers.length > 0) {
+                    updateExcelStatus('Customer details extracted successfully.', 'success');
+                    customerTableBody.innerHTML = '';
+                    extractedCustomers = data.customers;
+                    data.customers.forEach(cust => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `<td>${cust.name}</td><td>${cust.loan_id}</td><td>${cust.state}</td><td>${cust.phone}</td><td>${cust.amount}</td><td>${cust.due_date}</td>`;
+                        customerTableBody.appendChild(tr);
+                    });
+                    customerTableContainer.style.display = 'block';
+                    callAllButton.disabled = false;
+                    updateCallAllStatus('', 'info');
+                } else {
+                    updateExcelStatus('No customers found in the uploaded file.', 'error');
+                    customerTableContainer.style.display = 'none';
+                    extractedCustomers = [];
+                }
+            } catch (err) {
+                updateExcelStatus('Error uploading or extracting file.', 'error');
+                customerTableContainer.style.display = 'none';
+            }
+        });
+
+        callAllButton.addEventListener('click', async () => {
+            if (!extractedCustomers.length) {
+                updateCallAllStatus('No customers to call. Please upload and extract first.', 'error');
+                return;
+            }
+            callAllButton.disabled = true;
+            updateCallAllStatus('Triggering calls to all customers. Please wait...', 'info');
+            try {
+                const response = await fetch('/trigger-bulk-calls/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(extractedCustomers)
+                });
+                const data = await response.json();
+                if (data.results) {
+                    let summary = '';
+                    data.results.forEach(r => {
+                        summary += `${r.phone}: ${r.status}\n`;
+                    });
+                    updateCallAllStatus('Bulk call results:\n' + summary, 'success');
+                } else {
+                    updateCallAllStatus('No results returned from server.', 'error');
+                }
+            } catch (err) {
+                updateCallAllStatus('Error triggering bulk calls.', 'error');
+            }
+            callAllButton.disabled = false;
+        });
+    </script>
+</body>
+</html>
