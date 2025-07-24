@@ -14,12 +14,12 @@ EXOTEL_TO_NO = os.getenv("AGENT_PHONE_NUMBER")
 EXOTEL_CALLER_ID = os.getenv("EXOTEL_CALLER_ID")
 EXOTEL_CALL_URL = os.getenv("callurl")  # Typically like: https://api.exotel.in/v1/Accounts/{EXOTEL_SID}/Calls/connect.json
 
-def trigger_exotel_call():
+def trigger_exotel_agent_transfer(customer_number: str, agent_number: str):
     print("[📞] Initiating call via Exotel...")
 
     payload = {
-        'From': EXOTEL_FROM_NO,
-        'To': EXOTEL_TO_NO,
+        'From': customer_number,
+        'To': agent_number,
         'CallerId': EXOTEL_CALLER_ID,  # This should be your ExoPhone (virtual number)
         'CallType': 'trans'  # Optional: can be 'trans' (transactional) or 'promo'
     }
@@ -41,7 +41,4 @@ def trigger_exotel_call():
             print(response.text)
 
     except requests.exceptions.RequestException as e:
-        print(f"[❌ ERROR] Request to Exotel failed: {e}")
-
-if __name__ == "__main__":
-    trigger_exotel_call()
+        print(f"[❌ ERROR] Request to Exotel failed: {e}")  
