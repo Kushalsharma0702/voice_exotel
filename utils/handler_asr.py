@@ -33,17 +33,17 @@ class SarvamHandler:
         )
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             audio.export(f.name, format="wav")
-            f.seek(0)
-            print("[Sarvam REST] 🚀 Sending WAV to Sarvam API")
-
-            # Call Sarvam REST API directly
+            wav_path = f.name
+        print("[Sarvam REST] 🚀 Sending WAV to Sarvam API")
+        # Call Sarvam REST API directly
+        with open(wav_path, "rb") as wav_file:
             response = self.client.speech_to_text.transcribe(
-                file=f,
+                file=wav_file,
                 model="saarika:v2.5",
                 language_code="unknown"  # Make sure this matches your subscription
             )
-            print("[Sarvam REST] 📝 Transcript Arun:", response.transcript)
-            return response.transcript
+        print("[Sarvam REST] 📝 Transcript Arun:", response.transcript)
+        return response.transcript
     
     async def synthesize_tts_end(self, text: str,lang: str) -> bytes:
         print(f"[Sarvam TTS] 🔁 Starting text-to-speech greetinggreeting: {text}")
