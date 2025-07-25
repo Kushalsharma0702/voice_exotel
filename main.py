@@ -11,6 +11,7 @@ import httpx
 import requests
 from requests.auth import HTTPBasicAuth
 from pydantic import BaseModel
+import traceback
 
 import utils. connect_agent as agent
 import pandas as pd
@@ -64,18 +65,19 @@ SAMPLE_RATE = 16000
 CHANNELS = 1
 CHUNK_DURATION = 5
 
+# --- Multilingual Prompt Templates with SSML and Pauses ---
 GREETING_TEMPLATE = {
-    "en-IN": "Hello... this is Priya, calling on behalf of South India Finvest Bank. Am I speaking with Mr. {name}?",
-    "hi-IN": "नमस्ते... मैं प्रिय हूं, और ज़्रोसिस बैंक की ओर से बात कर रही हूं। क्या मैं श्री/सुश्री {name} से बात कर रही हूं?",
-    "ta-IN": "வணக்கம்... நான் பிரியா, இது ஸ்ரோசிஸ் வங்கியிலிருந்து அழைப்பு. திரு/திருமதி {name} பேசுகிறீர்களா?",
-    "te-IN": "హలో... నేను ప్రియ మాట్లాడుతున్నాను, ఇది జ్రోసిస్ బ్యాంక్ నుండి కాల్. మిస్టర్/మిసెస్ {name} మాట్లాడుతున్నారా?",
-    "ml-IN": "നമസ്കാരം... ഞാൻ പ്രിയയാണ്, സൗത്ത് ഇന്ത്യ ഫിൻവെസ്റ്റ് ബാങ്കിന്റെ ഭാഗമായാണ് വിളിച്ചത്. {name} ആണോ സംസാരിക്കുന്നത്?",
-    "gu-IN": "નમસ્તે... હું પ્રિયા છું, સાઉથ ઇન્ડિયા ફિનવેસ્ટ બેંક તરફથી બોલી રહી છું. શું હું શ્રી {name} સાથે વાત કરી રહી છું?",
-    "mr-IN": "नमस्कार... मी प्रिया बोलत आहे, साउथ इंडिया फिनवेस्ट बँकेकडून. मी श्री {name} शी बोलत आहे का?",
-    "bn-IN": "নমস্কার... আমি প্রিয়া, সাউথ ইন্ডিয়া ফিনভেস্ট ব্যাংকের পক্ষ থেকে ফোন করছি। আমি কি {name} এর সাথে কথা বলছি?",
-    "kn-IN": "ನಮಸ್ಕಾರ... ನಾನು ಪ್ರಿಯಾ, ಸೌತ್ ಇಂಡಿಯಾ ಫಿನ್‌ವೆಸ್ಟ್ ಬ್ಯಾಂಕ್‌ನಿಂದ ಕರೆ ಮಾಡುತ್ತಿದ್ದೇನೆ. ನಾನು ಶ್ರೀ {name} ಅವರೊಂದಿಗೆ ಮಾತನಾಡುತ್ತಿದ್ದೇನೆವಾ?",
-    "pa-IN": "ਸਤ ਸ੍ਰੀ ਅਕਾਲ... ਮੈਂ ਪ੍ਰਿਆ ਹਾਂ, ਸਾਊਥ ਇੰਡੀਆ ਫਿਨਵੈਸਟ ਬੈਂਕ ਵੱਲੋਂ ਗੱਲ ਕਰ ਰਹੀ ਹਾਂ। ਕੀ ਮੈਂ ਸ੍ਰੀ {name} ਨਾਲ ਗੱਲ ਕਰ ਰਹੀ ਹਾਂ?",
-    "or-IN": "ନମସ୍କାର... ମୁଁ ପ୍ରିୟା, ସାଉଥ୍ ଇଣ୍ଡିଆ ଫିନଭେଷ୍ଟ ବ୍ୟାଙ୍କରୁ କଥାହୁଁଛି। ମୁଁ {name} ସହିତ କଥାହୁଁଛି କି?"
+    "en-IN": '<speak><prosody rate="slow">Hello, <break time="600ms"/> this is Priya, calling on behalf of South India Finvest Bank. <break time="800ms"/> Am I speaking with Mr. {name}?</prosody></speak>',
+    "hi-IN": '<speak><prosody rate="slow">नमस्ते, <break time="600ms"/> मैं प्रिया हूं, और साउथ इंडिया फिनवेस्ट बैंक की ओर से बात कर रही हूं। <break time="800ms"/> क्या मैं श्री/सुश्री {name} से बात कर रही हूं?</prosody></speak>',
+    "ta-IN": '<speak><prosody rate="slow">வணக்கம், <break time="600ms"/> நான் பிரியா, இது சவுத் இந்தியா ஃபின்வெஸ்ட் வங்கியிலிருந்து அழைப்பு. <break time="800ms"/> திரு/திருமதி {name} பேசுகிறீர்களா?</prosody></speak>',
+    "te-IN": '<speak><prosody rate="slow">హలో, <break time="600ms"/> నేను ప్రియ మాట్లాడుతున్నాను, ఇది సౌత్ ఇండియా ఫిన్‌వెస్ట్ బ్యాంక్ నుండి కాల్. <break time="800ms"/> మిస్టర్/మిసెస్ {name} మాట్లాడుతున్నారా?</prosody></speak>',
+    "ml-IN": '<speak><prosody rate="slow">നമസ്കാരം, <break time="600ms"/> ഞാൻ പ്രിയയാണ്, സൗത്ത് ഇന്ത്യ ഫിൻവെസ്റ്റ് ബാങ്കിന്റെ ഭാഗമായാണ് വിളിച്ചത്. <break time="800ms"/> {name} ആണോ സംസാരിക്കുന്നത്?</prosody></speak>',
+    "gu-IN": '<speak><prosody rate="slow">નમસ્તે, <break time="600ms"/> હું પ્રિયા છું, સાઉથ ઇન્ડિયા ફિનવેસ્ટ બેંક તરફથી બોલી રહી છું. <break time="800ms"/> શું હું શ્રી {name} સાથે વાત કરી રહી છું?</prosody></speak>',
+    "mr-IN": '<speak><prosody rate="slow">नमस्कार, <break time="600ms"/> मी प्रिया बोलत आहे, साउथ इंडिया फिनवेस्ट बँकेकडून. <break time="800ms"/> मी श्री {name} शी बोलत आहे का?</prosody></speak>',
+    "bn-IN": '<speak><prosody rate="slow">নমস্কার, <break time="600ms"/> আমি প্রিয়া, সাউথ ইন্ডিয়া ফিনভেস্ট ব্যাংকের পক্ষ থেকে ফোন করছি। <break time="800ms"/> আমি কি {name} এর সাথে কথা বলছি?</prosody></speak>',
+    "kn-IN": '<speak><prosody rate="slow">ನಮಸ್ಕಾರ, <break time="600ms"/> ನಾನು ಪ್ರಿಯಾ, ಸೌತ್ ಇಂಡಿಯಾ ಫಿನ್‌ವೆಸ್ಟ್ ಬ್ಯಾಂಕ್‌ನಿಂದ ಕರೆ ಮಾಡುತ್ತಿದ್ದೇನೆ. <break time="800ms"/> ನಾನು ಶ್ರೀ {name} ಅವರೊಂದಿಗೆ ಮಾತನಾಡುತ್ತಿದ್ದೇನೆವಾ?</prosody></speak>',
+    "pa-IN": '<speak><prosody rate="slow">ਸਤ ਸ੍ਰੀ ਅਕਾਲ, <break time="600ms"/> ਮੈਂ ਪ੍ਰਿਆ ਹਾਂ, ਸਾਊਥ ਇੰਡੀਆ ਫਿਨਵੈਸਟ ਬੈਂਕ ਵੱਲੋਂ ਗੱਲ ਕਰ ਰਹੀ ਹਾਂ। <break time="800ms"/> ਕੀ ਮੈਂ ਸ੍ਰੀ {name} ਨਾਲ ਗੱਲ ਕਰ ਰਹੀ ਹਾਂ?</prosody></speak>',
+    "or-IN": '<speak><prosody rate="slow">ନମସ୍କାର, <break time="600ms"/> ମୁଁ ପ୍ରିୟା, ସାଉଥ୍ ଇଣ୍ଡିଆ ଫିନଭେଷ୍ଟ ବ୍ୟାଙ୍କରୁ କଥାହୁଁଛି। <break time="800ms"/> ମୁଁ {name} ସହିତ କଥାହୁଁଛି କି?</prosody></speak>',
 }
 
 # Customer details - these would ideally come from a database or CRM based on the incoming call 'From' number
@@ -113,10 +115,10 @@ async def greeting_template_play(websocket, customer_info, lang: str):
     audio_bytes = await sarvam.synthesize_tts_end(greeting, lang)
     await stream_audio_to_websocket(websocket, audio_bytes)
 
-# --- Multilingual Prompt Templates ---
+# --- Multilingual Prompt Templates with SSML and Pauses ---
 EMI_DETAILS_PART1_TEMPLATE = {
-    "en-IN": "Thank you... I'm calling about your loan ending in {loan_id}, which has an outstanding EMI of ₹{amount} due on {due_date}. I understand payments can be delayed — I'm here to help you avoid any further impact.",
-    "hi-IN": "धन्यवाद... मैं आपके लोन (अंतिम चार अंक {loan_id}) के बारे में कॉल कर रही हूँ, जिसकी बकाया ईएमआई ₹{amount} है, जो {due_date} को देय है। मैं समझती हूँ कि भुगतान में देरी हो सकती है — मैं आपकी मदद के लिए यहाँ हूँ ताकि आगे कोई समस्या न हो।",
+    "en-IN": '<speak><prosody rate="slow">Thank you. <break time="600ms"/> I am calling about your loan ending in {loan_id}, which has an outstanding EMI of ₹{amount} due on {due_date}. <break time="800ms"/> I understand payments can be delayed — I am here to help you avoid any further impact.</prosody></speak>',
+    "hi-IN": '<speak><prosody rate="slow">धन्यवाद। <break time="600ms"/> मैं आपके लोन (अंतिम चार अंक {loan_id}) के बारे में कॉल कर रही हूँ, जिसकी बकाया ईएमआई ₹{amount} है, जो {due_date} को देय है। <break time="800ms"/> मैं समझती हूँ कि भुगतान में देरी हो सकती है — मैं आपकी मदद के लिए यहाँ हूँ ताकि आगे कोई समस्या न हो।</prosody></speak>',
     "ta-IN": "நன்றி... உங்கள் கடன் (கடைசி நான்கு இலக்கங்கள் {loan_id}) குறித்து அழைக்கிறேன், அதற்கான நிலுவை EMI ₹{amount} {due_date} அன்று செலுத்த வேண்டியது உள்ளது. தாமதம் ஏற்படலாம் என்பதை புரிந்துகொள்கிறேன் — மேலும் பாதிப்பு ஏற்படாமல் உதவ நான் இங்கே இருக்கிறேன்.",
     "te-IN": "ధన్యవాదాలు... మీ రుణం ({loan_id} తో ముగిసే) గురించి కాల్ చేస్తున్నాను, దీనికి ₹{amount} EMI {due_date} నాటికి బాకీగా ఉంది. చెల్లింపులు ఆలస్యం కావచ్చు — మరింత ప్రభావం లేకుండా మీకు సహాయం చేయడానికి నేను ఇక్కడ ఉన్నాను.",
     "ml-IN": "നന്ദി... നിങ്ങളുടെ വായ്പ ({loan_id} അവസാനിക്കുന്ന) സംബന്ധിച്ച് വിളിക്കുന്നു, അതിന് ₹{amount} EMI {due_date} ന് ബാക്കി ഉണ്ട്. പണമടയ്ക്കുന്നതിൽ വൈകിപ്പോകാം — കൂടുതൽ പ്രശ്നങ്ങൾ ഒഴിവാക്കാൻ ഞാൻ സഹായിക്കാൻ ഇവിടെ ഉണ്ട്.",
@@ -129,8 +131,8 @@ EMI_DETAILS_PART1_TEMPLATE = {
 }
 
 EMI_DETAILS_PART2_TEMPLATE = {
-    "en-IN": "Please note... if this EMI remains unpaid, it may be reported to the credit bureau, which can affect your credit score. Continued delay may also classify your account as delinquent, leading to penalty charges or collection notices.",
-    "hi-IN": "कृपया ध्यान दें... यदि यह ईएमआई बकाया रहती है, तो इसे क्रेडिट ब्यूरो को रिपोर्ट किया जा सकता है, जिससे आपका क्रेडिट स्कोर प्रभावित हो सकता है। लगातार देरी से आपका खाता डिफॉल्टर घोषित हो सकता है, जिससे पेनल्टी या कलेक्शन नोटिस आ सकते हैं।",
+    "en-IN": '<speak><prosody rate="slow">Please note. <break time="600ms"/> If this EMI remains unpaid, it may be reported to the credit bureau, which can affect your credit score. <break time="600ms"/> Continued delay may also classify your account as delinquent, leading to penalty charges or collection notices.</prosody></speak>',
+    "hi-IN": '<speak><prosody rate="slow">कृपया ध्यान दें। <break time="600ms"/> यदि यह ईएमआई बकाया रहती है, तो इसे क्रेडिट ब्यूरो को रिपोर्ट किया जा सकता है, जिससे आपका क्रेडिट स्कोर प्रभावित हो सकता है। <break time="600ms"/> लगातार देरी से आपका खाता डिफॉल्टर घोषित हो सकता है, जिससे पेनल्टी या कलेक्शन नोटिस आ सकते हैं।</prosody></speak>',
     "ta-IN": "தயவு செய்து கவனிக்கவும்... இந்த EMI செலுத்தப்படவில்லை என்றால், அது கிரெடிட் ப்யூரோவுக்கு தெரிவிக்கப்படலாம், இது உங்கள் கிரெடிட் ஸ்கோருக்கு பாதிப்பை ஏற்படுத்தும். தொடர்ந்த தாமதம் உங்கள் கணக்கை குற்றவாளியாக வகைப்படுத்தும், அபராதம் அல்லது வசூல் நோட்டீஸ் வரலாம்.",
     "te-IN": "దయచేసి గమనించండి... ఈ EMI చెల్లించకపోతే, అది క్రెడిట్ బ్యూరోకు నివేదించబడవచ్చు, ఇది మీ క్రెడిట్ స్కోర్‌ను ప్రభావితం చేయవచ్చు. కొనసాగుతున్న ఆలస్యం వల్ల మీ ఖాతా డిఫాల్ట్‌గా పరిగణించబడుతుంది, జరిమానాలు లేదా వసూలు నోటీసులు రావచ్చు.",
     "ml-IN": "ദയവായി ശ്രദ്ധിക്കുക... ഈ EMI അടയ്ക്കപ്പെടാതെ പോയാൽ, അത് ക്രെഡിറ്റ് ബ്യൂറോയ്ക്ക് റിപ്പോർട്ട് ചെയ്യപ്പെടാം, ഇത് നിങ്ങളുടെ ക്രെഡിറ്റ് സ്കോറിനെ ബാധിക്കും. തുടർച്ചയായ വൈകിപ്പിക്കൽ നിങ്ങളുടെ അക്കൗണ്ടിനെ ഡിഫോൾട്ട് ആയി കണക്കാക്കും, പിഴയോ കലക്ഷൻ നോട്ടീസോ വരാം.",
@@ -143,8 +145,8 @@ EMI_DETAILS_PART2_TEMPLATE = {
 }
 
 AGENT_CONNECT_TEMPLATE = {
-    "en-IN": "If you're facing difficulties... we have options like part payments or revised EMI plans. Would you like me to connect to one of our agents, to assist you better?",
-    "hi-IN": "यदि आपको कठिनाई हो रही है... तो हमारे पास आंशिक भुगतान या संशोधित ईएमआई योजनाओं जैसे विकल्प हैं। क्या आप चाहेंगे कि मैं आपको हमारे एजेंट से जोड़ दूं, ताकि वे आपकी मदद कर सकें?",
+    "en-IN": '<speak><prosody rate="slow">If you are facing difficulties, <break time="600ms"/> we have options like part payments or revised EMI plans. <break time="600ms"/> Would you like me to connect you to one of our agents to assist you better?</prosody></speak>',
+    "hi-IN": '<speak><prosody rate="slow">यदि आपको कठिनाई हो रही है, <break time="600ms"/> तो हमारे पास आंशिक भुगतान या संशोधित ईएमआई योजनाओं जैसे विकल्प हैं। <break time="600ms"/> क्या आप चाहेंगे कि मैं आपको हमारे एजेंट से जोड़ दूं, ताकि वे आपकी मदद कर सकें?</prosody></speak>',
     "ta-IN": "உங்களுக்கு சிரமம் இருந்தால்... பகுதி கட்டணம் அல்லது திருத்தப்பட்ட EMI திட்டங்கள் போன்ற விருப்பங்கள் உள்ளன. உங்களுக்கு உதவ எங்கள் ஏஜெண்டுடன் இணைக்க விரும்புகிறீர்களா?",
     "te-IN": "మీకు ఇబ్బంది ఉంటే... భాగ చెల్లింపులు లేదా సవరించిన EMI ప్లాన్‌లు వంటి ఎంపికలు ఉన్నాయి. మీకు సహాయం చేయడానికి మా ఏజెంట్‌ను కలిపించాలా?",
     "ml-IN": "നിങ്ങൾക്ക് ബുദ്ധിമുട്ട് ഉണ്ടെങ്കിൽ... ഭാഗിക പണമടയ്ക്കൽ അല്ലെങ്കിൽ പുതുക്കിയ EMI പദ്ധതികൾ പോലുള്ള ഓപ്ഷനുകൾ ഞങ്ങൾക്കുണ്ട്. നിങ്ങളെ സഹായിക്കാൻ ഞങ്ങളുടെ ഏജന്റുമായി ബന്ധിപ്പിക്കണോ?",
@@ -157,15 +159,15 @@ AGENT_CONNECT_TEMPLATE = {
 }
 
 GOODBYE_TEMPLATE = {
-    "en-IN": "I understand... If you change your mind, please call us back. Thank you. Goodbye.",
-    "hi-IN": "मैं समझती हूँ... यदि आप अपना विचार बदलते हैं, तो कृपया हमें वापस कॉल करें। धन्यवाद। अलविदा।",
+    "en-IN": '<speak><prosody rate="slow">I understand. <break time="600ms"/> If you change your mind, please call us back. <break time="600ms"/> Thank you. Goodbye.</prosody></speak>',
+    "hi-IN": '<speak><prosody rate="slow">मैं समझती हूँ। <break time="600ms"/> यदि आप अपना विचार बदलते हैं, तो कृपया हमें वापस कॉल करें। <break time="600ms"/> धन्यवाद। अलविदा।</prosody></speak>',
     "ta-IN": "நான் புரிந்துகொள்கிறேன்... நீங்கள் உங்கள் மனதை மாற்றினால், தயவுசெய்து எங்களை மீண்டும் அழைக்கவும். நன்றி. விடைபெறுகிறேன்.",
     "te-IN": "నాకు అర్థమైంది... మీరు మీ అభిప్రాయాన్ని మార్చుకుంటే, దయచేసి మమ్మల్ని తిరిగి కాల్ చేయండి. ధన్యవాదాలు. వీడ్కోలు.",
     "ml-IN": "ഞാൻ മനസ്സിലാക്കുന്നു... നിങ്ങൾ അഭിപ്രായം മാറ്റിയാൽ, ദയവായി ഞങ്ങളെ വീണ്ടും വിളിക്കുക. നന്ദി. വിട.",
     "gu-IN": "હું સમજું છું... જો તમે તમારો મન બદલો, તો કૃપા કરીને અમને પાછા કોલ કરો. આભાર. અલવિદા.",
     "mr-IN": "मी समजते... तुम्ही तुमचा निर्णय बदलल्यास, कृपया आम्हाला पुन्हा कॉल करा. धन्यवाद. गुडબाय.",
     "bn-IN": "আমি বুঝতে পারছি... আপনি যদি মত পরিবর্তন করেন, দয়া করে আমাদের আবার কল করুন। ধন্যবাদ। বিদায়।",
-    "kn-IN": "ನಾನು ಅರ್ಥಮಾಡಿಕೊಂಡೆ... ನೀವು ನಿಮ್ಮ ಅಭಿಪ್ರಾಯವನ್ನು ಬದಲಾಯಿಸಿದರೆ, ದಯವಿಟ್ಟು ನಮಗೆ ಮತ್ತೆ ಕರೆ ಮಾಡಿ. ಧನ್ಯವಾದಗಳು. ವಿದಾಯ.",
+    "kn-IN": "ನಾನು ಅರ್ಥಮಾಡಿಕೊಂಡೆ... ನೀವು ನಿಮ್ಮ ಅಭಿಪ్ರಾಯವನ್ನು ಬದಲಾಯಿಸಿದರೆ, ದಯವಿಟ್ಟು ನಮಗೆ ಮತ್ತೆ ಕರೆ ಮಾಡಿ. ಧನ್ಯವಾದಗಳು. ವಿದಾಯ.",
     "pa-IN": "ਮੈਂ ਸਮਝਦੀ ਹਾਂ... ਜੇ ਤੁਸੀਂ ਆਪਣਾ ਮਨ ਬਦਲੋ, ਤਾਂ ਕਿਰਪਾ ਕਰਕੇ ਸਾਨੂੰ ਮੁੜ ਕਾਲ ਕਰੋ। ਧੰਨਵਾਦ। ਅਲਵਿਦਾ।",
     "or-IN": "ମୁଁ ବୁଝିଥିଲେ... ଯଦି ଆପଣ ମନ ବଦଳାନ୍ତି, ଦୟାକରି ଆମକୁ ପୁଣି କଲ୍ କରନ୍ତୁ। ଧନ୍ୟବାଦ। ବିଦାୟ।"
 }
@@ -264,18 +266,33 @@ async def exotel_voicebot(websocket: WebSocket):
             except WebSocketDisconnect:
                 print("[WebSocket] Client disconnected.")
                 break
-            msg = json.loads(data)
+            except Exception as e:
+                print(f"[WebSocket] Error receiving text: {e}\n{traceback.format_exc()}")
+                break
+            try:
+                msg = json.loads(data)
+            except Exception as e:
+                print(f"[WebSocket] Error parsing JSON: {e}\n{traceback.format_exc()}")
+                continue
             if msg.get("event") == "start":
-                print("[WebSocket] 🔁 Got start event")
-                if conversation_stage == "INITIAL_GREETING":
-                    print("[Voicebot] 1. Sending initial greeting.")
+                print("[STAGE] 1. Sending initial greeting.")
+                try:
                     await play_initial_greeting(websocket, customer['name'])
-                    conversation_stage = "WAITING_FOR_LANG_DETECT"
+                    print("[STAGE] 1. Initial greeting played.")
+                except Exception as e:
+                    print(f"[ERROR] Initial greeting failed: {e}\n{traceback.format_exc()}")
+                    break
+                conversation_stage = "WAITING_FOR_LANG_DETECT"
                 continue
             if msg.get("event") == "media":
                 payload_b64 = msg["media"]["payload"]
-                raw_audio = base64.b64decode(payload_b64)
+                try:
+                    raw_audio = base64.b64decode(payload_b64)
+                except Exception as e:
+                    print(f"[ERROR] Failed to decode audio: {e}\n{traceback.format_exc()}")
+                    continue
                 if interaction_complete:
+                    print("[STAGE] Interaction complete, ignoring further media.")
                     continue
                 if raw_audio and any(b != 0 for b in raw_audio):
                     audio_buffer.extend(raw_audio)
@@ -283,53 +300,99 @@ async def exotel_voicebot(websocket: WebSocket):
                 if now - last_transcription_time >= BUFFER_DURATION_SECONDS:
                     if len(audio_buffer) == 0:
                         if conversation_stage == "WAITING_FOR_LANG_DETECT":
-                            print("[Voicebot] No audio received during language detection stage. Playing 'didn't hear' prompt.")
-                            await play_did_not_hear_response(websocket)
+                            print("[STAGE] No audio during language detection. Playing 'didn't hear' prompt.")
+                            try:
+                                await play_did_not_hear_response(websocket)
+                                print("[STAGE] 'Didn't hear' prompt played.")
+                            except Exception as e:
+                                print(f"[ERROR] 'Didn't hear' prompt failed: {e}\n{traceback.format_exc()}")
                         elif conversation_stage == "WAITING_AGENT_RESPONSE":
-                            print("[Voicebot] No audio received during agent question stage. Repeating question.")
-                            await play_agent_connect_question(websocket, call_detected_lang)
+                            print("[STAGE] No audio during agent question. Repeating question.")
+                            try:
+                                await play_agent_connect_question(websocket, call_detected_lang)
+                                print("[STAGE] Agent connect question repeated.")
+                            except Exception as e:
+                                print(f"[ERROR] Agent connect question repeat failed: {e}\n{traceback.format_exc()}")
                         audio_buffer.clear()
                         last_transcription_time = now
                         continue
-                    transcript = sarvam.transcribe_from_payload(audio_buffer)
-                    print(f"[Sarvam ASR] 📝 Transcript: {transcript}")
+                    try:
+                        transcript = sarvam.transcribe_from_payload(audio_buffer)
+                        print(f"[Sarvam ASR] 📝 Transcript: {transcript}")
+                    except Exception as e:
+                        print(f"[ERROR] ASR transcription failed: {e}\n{traceback.format_exc()}")
+                        transcript = None
                     if transcript:
                         if conversation_stage == "WAITING_FOR_LANG_DETECT":
-                            call_detected_lang = detect_language(transcript)
-                            print(f"[Voicebot] 2. Detected Language: {call_detected_lang}")
-                            await greeting_template_play(websocket, customer, lang=call_detected_lang)
-                            await asyncio.sleep(1)  # Pause for realism
-                            await play_emi_details_part1(websocket, customer, call_detected_lang)
-                            await asyncio.sleep(0.5)
-                            await play_emi_details_part2(websocket, customer, call_detected_lang)
-                            await asyncio.sleep(0.5)
-                            await play_agent_connect_question(websocket, call_detected_lang)
+                            try:
+                                call_detected_lang = detect_language(transcript)
+                                print(f"[STAGE] 2. Detected Language: {call_detected_lang}")
+                                await greeting_template_play(websocket, customer, lang=call_detected_lang)
+                                print("[STAGE] Greeting in detected language played.")
+                                await asyncio.sleep(1)
+                                print("[STAGE] About to play EMI part 1.")
+                                await play_emi_details_part1(websocket, customer, call_detected_lang)
+                                print("[STAGE] EMI part 1 played.")
+                                await asyncio.sleep(0.5)
+                                print("[STAGE] About to play EMI part 2.")
+                                await play_emi_details_part2(websocket, customer, call_detected_lang)
+                                print("[STAGE] EMI part 2 played.")
+                                await asyncio.sleep(0.5)
+                                print("[STAGE] About to play agent connect question.")
+                                await play_agent_connect_question(websocket, call_detected_lang)
+                                print("[STAGE] Agent connect question played.")
+                            except Exception as e:
+                                print(f"[ERROR] Error in main flow after language detection: {e}\n{traceback.format_exc()}")
+                                try:
+                                    await play_goodbye_after_decline(websocket, call_detected_lang)
+                                except Exception as e2:
+                                    print(f"[ERROR] Failed to play goodbye after error: {e2}\n{traceback.format_exc()}")
+                                interaction_complete = True
+                                conversation_stage = "ERROR_TERMINAL"
+                                break
                             conversation_stage = "WAITING_AGENT_RESPONSE"
                             audio_buffer.clear()
                             last_transcription_time = now
                             continue
                         elif conversation_stage == "WAITING_AGENT_RESPONSE":
-                            intent = detect_intent(transcript.lower())
-                            if intent == "affirmative" or intent == "agent_transfer":
-                                print("[Voicebot] User affirmed agent transfer. Initiating transfer.")
-                                await play_transfer_to_agent(websocket, customer_number="08438019383")
+                            try:
+                                intent = detect_intent(transcript.lower())
+                                print(f"[STAGE] Detected intent: {intent}")
+                                if intent == "affirmative" or intent == "agent_transfer":
+                                    print("[STAGE] User affirmed agent transfer. Initiating transfer.")
+                                    await play_transfer_to_agent(websocket, customer_number="08438019383")
+                                    print("[STAGE] Transfer to agent played.")
+                                    interaction_complete = True
+                                    conversation_stage = "TRANSFERRING_TO_AGENT"
+                                elif intent == "negative":
+                                    print("[STAGE] User declined agent transfer. Saying goodbye.")
+                                    await play_goodbye_after_decline(websocket, call_detected_lang)
+                                    print("[STAGE] Goodbye after decline played.")
+                                    interaction_complete = True
+                                    conversation_stage = "GOODBYE_DECLINE"
+                                else:
+                                    print("[STAGE] Unclear response to agent connect. Repeating question.")
+                                    await play_agent_connect_question(websocket, call_detected_lang)
+                                    print("[STAGE] Agent connect question repeated.")
+                            except Exception as e:
+                                print(f"[ERROR] Error in agent response stage: {e}\n{traceback.format_exc()}")
+                                try:
+                                    await play_goodbye_after_decline(websocket, call_detected_lang)
+                                except Exception as e2:
+                                    print(f"[ERROR] Failed to play goodbye after error: {e2}\n{traceback.format_exc()}")
                                 interaction_complete = True
-                                conversation_stage = "TRANSFERRING_TO_AGENT"
-                            elif intent == "negative":
-                                print("[Voicebot] User declined agent transfer. Saying goodbye.")
-                                await play_goodbye_after_decline(websocket, call_detected_lang)
-                                interaction_complete = True
-                                conversation_stage = "GOODBYE_DECLINE"
-                            else:
-                                print("[Voicebot] Unclear response to agent connect. Repeating question.")
-                                await play_agent_connect_question(websocket, call_detected_lang)
+                                conversation_stage = "ERROR_TERMINAL"
+                                break
                     audio_buffer.clear()
                     last_transcription_time = now
     except Exception as e:
-        print(f"[WebSocket Error] ❌ {e}")
+        print(f"[WebSocket Error] ❌ {e}\n{traceback.format_exc()}")
     finally:
         if not websocket.client_state.name == 'DISCONNECTED':
-            await websocket.close()
+            try:
+                await websocket.close()
+            except Exception as e:
+                print(f"[WebSocket] Error during close: {e}\n{traceback.format_exc()}")
         print("[WebSocket] 🔒 Closed")
 
 
@@ -337,28 +400,59 @@ async def exotel_voicebot(websocket: WebSocket):
 
 def detect_language(text):
     text = text.strip().lower()
-
-    if any(word in text for word in ["नमस्ते", "हां", "नहीं", "कैसे", "आप"]) or _is_devanagari(text):
+    # Hindi
+    if any(word in text for word in ["नमस्ते", "हां", "नहीं", "कैसे", "आप", "कृपया", "धन्यवाद"]) or _is_devanagari(text):
         return "hi-IN"
+    # Tamil
     if any(word in text for word in ["வணக்கம்", "ஆம்", "இல்லை", "எப்படி"]) or _is_tamil(text):
         return "ta-IN"
+    # Telugu
     if any(word in text for word in ["హాయ్", "అవును", "కాదు", "ఎలా"]) or _is_telugu(text):
         return "te-IN"
+    # Kannada
     if any(word in text for word in ["ಹೆಲೋ", "ಹೌದು", "ಇಲ್ಲ", "ಹೆಗಿದೆ"]) or _is_kannada(text):
         return "kn-IN"
+    # Malayalam
+    if any(word in text for word in ["നമസ്കാരം", "അതെ", "ഇല്ല", "എങ്ങനെ"]) or _is_malayalam(text):
+        return "ml-IN"
+    # Gujarati
+    if any(word in text for word in ["નમસ્તે", "હા", "ના", "કેવી રીતે"]) or _is_gujarati(text):
+        return "gu-IN"
+    # Marathi
+    if any(word in text for word in ["नमस्कार", "होय", "नाही", "कसे"]) or _is_marathi(text):
+        return "mr-IN"
+    # Bengali
+    if any(word in text for word in ["নমস্কার", "হ্যাঁ", "না", "কেমন"]) or _is_bengali(text):
+        return "bn-IN"
+    # Punjabi
+    if any(word in text for word in ["ਸਤ ਸ੍ਰੀ ਅਕਾਲ", "ਹਾਂ", "ਨਹੀਂ", "ਕਿ൵ੇਂ"]) or _is_punjabi(text):
+        return "pa-IN"
+    # Oriya
+    if any(word in text for word in ["ନମସ୍କାର", "ହଁ", "ନା", "କିପରି"]) or _is_oriya(text):
+        return "or-IN"
     return "en-IN"
-
 def _is_devanagari(text):
     return any('\u0900' <= ch <= '\u097F' for ch in text)
-
 def _is_tamil(text):
     return any('\u0B80' <= ch <= '\u0BFF' for ch in text)
-
 def _is_telugu(text):
     return any('\u0C00' <= ch <= '\u0C7F' for ch in text)
-
 def _is_kannada(text):
     return any('\u0C80' <= ch <= '\u0CFF' for ch in text)
+def _is_malayalam(text):
+    return any('\u0D00' <= ch <= '\u0D7F' for ch in text)
+def _is_gujarati(text):
+    return any('\u0A80' <= ch <= '\u0AFF' for ch in text)
+def _is_marathi(text):
+    return any('\u0900' <= ch <= '\u097F' for ch in text)  # Shares Devanagari
+    # Could add more specific checks
+
+def _is_bengali(text):
+    return any('\u0980' <= ch <= '\u09FF' for ch in text)
+def _is_punjabi(text):
+    return any('\u0A00' <= ch <= '\u0A7F' for ch in text)
+def _is_oriya(text):
+    return any('\u0B00' <= ch <= '\u0B7F' for ch in text)
 
 def detect_intent(text):
     # This intent detection is simplified for the flow provided by the user.
