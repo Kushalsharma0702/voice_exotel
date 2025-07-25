@@ -252,14 +252,11 @@ async def record_audio_from_websocket(websocket) -> bytes:
 async def exotel_voicebot(websocket: WebSocket):
     await websocket.accept()
     print("[WebSocket] ✅ Connected to Exotel Voicebot Applet")
-    
-    # State variable for the conversation stage
-    conversation_stage = "INITIAL_GREETING" # States: INITIAL_GREETING, WAITING_FOR_LANG_DETECT, PLAYING_PERSONALIZED_GREETING, PLAYING_EMI_PART1, PLAYING_EMI_PART2, ASKING_AGENT_CONNECT, WAITING_AGENT_RESPONSE, TRANSFERRING_TO_AGENT, GOODBYE_DECLINE
-    call_detected_lang = "en-IN" # Default language, will be updated after first user response
+    conversation_stage = "INITIAL_GREETING"
+    call_detected_lang = "en-IN"
     audio_buffer = bytearray()
     last_transcription_time = time.time()
-    interaction_complete = False # Flag to stop processing media after the main flow ends
-
+    interaction_complete = False
     try:
         while True:
             try:
@@ -268,28 +265,21 @@ async def exotel_voicebot(websocket: WebSocket):
                 print("[WebSocket] Client disconnected.")
                 break
             msg = json.loads(data)
-
             if msg.get("event") == "start":
-                print("[WebSocket] �� Got start event")
+                print("[WebSocket] 🔁 Got start event")
                 if conversation_stage == "INITIAL_GREETING":
-                    print("[Voicebot] 1. Sending initial English greeting.")
+                    print("[Voicebot] 1. Sending initial greeting.")
                     await play_initial_greeting(websocket, customer['name'])
                     conversation_stage = "WAITING_FOR_LANG_DETECT"
-                    #interaction_complete = True
                 continue
-
             if msg.get("event") == "media":
                 payload_b64 = msg["media"]["payload"]
                 raw_audio = base64.b64decode(payload_b64)
-
                 if interaction_complete:
                     continue
-
                 if raw_audio and any(b != 0 for b in raw_audio):
                     audio_buffer.extend(raw_audio)
-                
                 now = time.time()
-
                 if now - last_transcription_time >= BUFFER_DURATION_SECONDS:
                     if len(audio_buffer) == 0:
                         if conversation_stage == "WAITING_FOR_LANG_DETECT":
@@ -301,56 +291,40 @@ async def exotel_voicebot(websocket: WebSocket):
                         audio_buffer.clear()
                         last_transcription_time = now
                         continue
-
                     transcript = sarvam.transcribe_from_payload(audio_buffer)
                     print(f"[Sarvam ASR] 📝 Transcript: {transcript}")
-
                     if transcript:
                         if conversation_stage == "WAITING_FOR_LANG_DETECT":
                             call_detected_lang = detect_language(transcript)
                             print(f"[Voicebot] 2. Detected Language: {call_detected_lang}")
-    ############### If the detected language is different original customer only then reply greeting with newly dected langaue.
                             await greeting_template_play(websocket, customer, lang=call_detected_lang)
+                            await asyncio.sleep(1)  # Pause for realism
                             await play_emi_details_part1(websocket, customer, call_detected_lang)
-    ######## Its skipiing after reading part2
-                            #await play_emi_details_part2(websocket, customer, call_detected_lang)
-                            #await play_agent_connect_question(websocket, call_detected_lang)
+                            await asyncio.sleep(0.5)
+                            await play_emi_details_part2(websocket, customer, call_detected_lang)
+                            await asyncio.sleep(0.5)
+                            await play_agent_connect_question(websocket, call_detected_lang)
                             conversation_stage = "WAITING_AGENT_RESPONSE"
-                            interaction_complete = True
-                        audio_buffer.clear()
-                        if conversation_stage == "WAITING_AGENT_RESPONSE":
-                            retry_count = 0
-                            max_retries = 2
-
-                            while retry_count <= max_retries:
-                                #audio_bytes = await record_audio_from_websocket(websocket)
-                                #print(f"[Sarvam ASR] 📝 Transcript: {audio_buffer}")
-                                transcript = sarvam.transcribe_from_payload(audio_buffer)
-                                print(f"[Sarvam ASR] 📝 Transcript: {transcript}")
-                                #lang = detect_language(transcript,lang)
-
-                                if detect_intent(transcript):
-                                    await play_transfer_to_agent(websocket, call_detected_lang)
-                                    interaction_complete = True
-                                    break
-                                elif detect_intent(transcript):
-                                    print("[Intent] ❌ User declined agent transfer.")
-                                    await play_goodbye_message(websocket, call_detected_lang)
-                                    interaction_complete = True
-                                    break
-                                else:
-                                    print("[Intent] 🤔 Unclear response. Asking again.")
-                                    await play_agent_connect_question(websocket, call_detected_lang)
-                                    retry_count += 1
-
-                            if retry_count > max_retries:
-                                print("[Voicebot] 😐 Max retries exceeded. Ending politely.")
-                                await play_goodbye_message(websocket, call_detected_lang)
-                                interaction_complete = False
-
+                            audio_buffer.clear()
+                            last_transcription_time = now
+                            continue
+                        elif conversation_stage == "WAITING_AGENT_RESPONSE":
+                            intent = detect_intent(transcript.lower())
+                            if intent == "affirmative" or intent == "agent_transfer":
+                                print("[Voicebot] User affirmed agent transfer. Initiating transfer.")
+                                await play_transfer_to_agent(websocket, customer_number="08438019383")
+                                interaction_complete = True
+                                conversation_stage = "TRANSFERRING_TO_AGENT"
+                            elif intent == "negative":
+                                print("[Voicebot] User declined agent transfer. Saying goodbye.")
+                                await play_goodbye_after_decline(websocket, call_detected_lang)
+                                interaction_complete = True
+                                conversation_stage = "GOODBYE_DECLINE"
+                            else:
+                                print("[Voicebot] Unclear response to agent connect. Repeating question.")
+                                await play_agent_connect_question(websocket, call_detected_lang)
                     audio_buffer.clear()
                     last_transcription_time = now
-
     except Exception as e:
         print(f"[WebSocket Error] ❌ {e}")
     finally:
