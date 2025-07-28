@@ -11,11 +11,9 @@ import httpx
 import requests
 from requests.auth import HTTPBasicAuth
 from pydantic import BaseModel
-import pandas as pd
-import string
 
-import utils.connect_agent as agent
-import utils.bedrock_client as bedrock_client
+import utils. connect_agent as agent
+import pandas as pd
 
 app = FastAPI()
 
@@ -25,77 +23,6 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Configure Jinja2Templates to serve HTML files from the 'static' directory
 # This assumes your index.html is directly inside the 'static' folder
 templates = Jinja2Templates(directory="static")
-
-# Global variable to store customer data
-customer_data = []
-
-# State to Language Mapping (moved up before it's used)
-STATE_TO_LANGUAGE = {
-    'andhra pradesh': 'te-IN',
-    'arunachal pradesh': 'hi-IN',
-    'assam': 'hi-IN',
-    'bihar': 'hi-IN',
-    'chhattisgarh': 'hi-IN',
-    'goa': 'hi-IN',
-    'gujarat': 'gu-IN',
-    'haryana': 'hi-IN',
-    'himachal pradesh': 'hi-IN',
-    'jharkhand': 'hi-IN',
-    'karnataka': 'kn-IN',
-    'kerala': 'ml-IN',
-    'madhya pradesh': 'hi-IN',
-    'maharashtra': 'mr-IN',
-    'manipur': 'hi-IN',
-    'meghalaya': 'hi-IN',
-    'mizoram': 'hi-IN',
-    'nagaland': 'hi-IN',
-    'odisha': 'or-IN',
-    'punjab': 'pa-IN',
-    'rajasthan': 'hi-IN',
-    'sikkim': 'hi-IN',
-    'tamil nadu': 'ta-IN',
-    'telangana': 'te-IN',
-    'tripura': 'hi-IN',
-    'uttar pradesh': 'hi-IN',
-    'uttarakhand': 'hi-IN',
-    'west bengal': 'bn-IN',
-    'delhi': 'hi-IN',
-    'puducherry': 'ta-IN',
-    'chandigarh': 'hi-IN',
-    'andaman and nicobar islands': 'hi-IN',
-    'dadra and nagar haveli and daman and diu': 'hi-IN',
-    'jammu and kashmir': 'hi-IN',
-    'ladakh': 'hi-IN',
-    'lakshadweep': 'ml-IN',
-}
-
-def get_initial_language_from_state(state: str) -> str:
-    """Get initial language from state"""
-    if not state:
-        return 'en-IN'
-    return STATE_TO_LANGUAGE.get(state.strip().lower(), 'en-IN')
-
-def process_uploaded_customers(customers_list):
-    """Process uploaded customer data and add language mapping"""
-    global customer_data
-    try:
-        customer_data = []
-        for customer in customers_list:
-            customer_info = {
-                "name": customer["name"],
-                "phone": str(customer["phone"]),
-                "loan_id": str(customer["loan_id"]),
-                "amount": str(customer["amount"]),
-                "due_date": str(customer["due_date"]),
-                "state": customer["state"],
-                "lang": get_initial_language_from_state(customer["state"])
-            }
-            customer_data.append(customer_info)
-        print(f"✅ Processed {len(customer_data)} customers from uploaded data")
-        return customer_data
-    except Exception as e:
-        print(f"❌ Error processing uploaded customer data: {e}")
-        return []
 
 # --- NEW: Dashboard HTML Endpoint ---
 @app.get("/", response_class=HTMLResponse)
@@ -132,7 +59,7 @@ EXOTEL_VIRTUAL_NUMBER = os.getenv("EXOTEL_VIRTUAL_NUMBER")
 EXOTEL_FLOW_APP_ID= os.getenv("EXOTEL_FLOW_APP_ID")
 sarvam = SarvamHandler(SARVAM_API_KEY)
 
-BUFFER_DURATION_SECONDS = 3.0  # Duration to buffer audio before processing (increased to give more time)
+BUFFER_DURATION_SECONDS = 1.0
 SAMPLE_RATE = 16000
 CHANNELS = 1
 CHUNK_DURATION = 5
@@ -165,13 +92,14 @@ GREETING_TEMPLATE = {
     "or-IN": "ନମସ୍କାର... ମୁଁ ପ୍ରିୟା, South India Finvest Bank ବ୍ୟାଙ୍କରୁ କଥାହୁଁଛି। ମୁଁ {name} ସହିତ କଥାହୁଁଛି କି?"
 }
 
-def get_customer_by_phone(phone_number: str):
-    """Get customer data by phone number"""
-    global customer_data
-    for customer in customer_data:
-        if customer.get('phone') == phone_number:
-            return customer
-    return None
+# Customer details - these would ideally come from a database or CRM based on the incoming call 'From' number
+customer = {
+        "name": "Jothika",
+        "loan_id": "5 9 6 9 2 ", # Maps to loan_last4
+        "amount": "2700", # Maps to emi_amount
+        "due_date": "11 July", 
+        "lang": "ta-IN"# Maps to due_date
+}
 
 # --- New TTS Helper Functions for the specified flow ---
 
@@ -182,33 +110,23 @@ async def play_initial_greeting(websocket, customer_name: str):
     audio_bytes = await sarvam.synthesize_tts_end(prompt_text, "en-IN")
     await stream_audio_to_websocket(websocket, audio_bytes)
 
-async def play_did_not_hear_response(websocket, lang: str = "en-IN"):
+async def play_did_not_hear_response(websocket):
     """Plays a prompt when the initial response is not heard."""
-    prompt_text = DID_NOT_HEAR_TEMPLATE.get(lang, DID_NOT_HEAR_TEMPLATE["en-IN"])
-    print(f"[Sarvam TTS] 🔁 Converting 'didn't hear' prompt in {lang}: {prompt_text}")
-    audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
+    prompt_text = (
+        "I'm sorry, I didn't hear your response. This call is regarding your loan account. "
+        "If this is a convenient time to talk, please say 'yes'. Otherwise, we'll try to reach you later."
+    )
+    print(f"[Sarvam TTS] 🔁 Converting 'didn't hear' prompt: {prompt_text}")
+    audio_bytes = await sarvam.synthesize_tts_end(prompt_text, "en-IN") # Keep English for this retry
     await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def greeting_template_play(websocket, customer_info, lang: str):
     """Plays the personalized greeting in the detected language."""
-    print(f"[Voicebot] greeting_template_play - Language: {lang}")
-    try:
-        greeting = GREETING_TEMPLATE.get(lang, GREETING_TEMPLATE["en-IN"]).format(name=customer_info['name'])
-        print(f"[Sarvam TTS] 🔁 Converting personalized greeting: {greeting}")
-        audio_bytes = await sarvam.synthesize_tts_end(greeting, lang)
-        print(f"[Sarvam TTS] ✅ Audio generated, size: {len(audio_bytes)} bytes")
-        await stream_audio_to_websocket(websocket, audio_bytes)
-        print(f"[Voicebot] ✅ Greeting sent successfully in {lang}")
-    except Exception as e:
-        print(f"[Voicebot] ❌ Error in greeting_template_play: {e}")
-        # Fallback to English
-        try:
-            fallback_greeting = GREETING_TEMPLATE["en-IN"].format(name=customer_info['name'])
-            audio_bytes = await sarvam.synthesize_tts_end(fallback_greeting, "en-IN")
-            await stream_audio_to_websocket(websocket, audio_bytes)
-            print("[Voicebot] ✅ Fallback greeting sent in English")
-        except Exception as fallback_e:
-            print(f"[Voicebot] ❌ Error in fallback greeting: {fallback_e}")
+    print("greeting_template_play")
+    greeting = GREETING_TEMPLATE.get(lang, GREETING_TEMPLATE["en-IN"]).format(name=customer_info['name'])
+    print(f"[Sarvam TTS] 🔁 Converting personalized greeting: {greeting}")
+    audio_bytes = await sarvam.synthesize_tts_end(greeting, lang)
+    await stream_audio_to_websocket(websocket, audio_bytes)
 
 # --- Multilingual Prompt Templates ---
 EMI_DETAILS_PART1_TEMPLATE = {
@@ -267,109 +185,39 @@ GOODBYE_TEMPLATE = {
     "or-IN": "ମୁଁ ବୁଝିଥିଲେ... ଯଦି ଆପଣ ମନ ବଦଳାନ୍ତି, ଦୟାକରି ଆମକୁ ପୁଣି କଲ୍ କରନ୍ତୁ। ଧନ୍ୟବାଦ। ବିଦାୟ।"
 }
 
-DID_NOT_HEAR_TEMPLATE = {
-    "en-IN": "I'm unable to hear your choice. Please repeat.",
-    "hi-IN": "मैं आपकी पसंद सुन नहीं पा रही हूँ। कृपया दोहराएँ।",
-    "ta-IN": "நான் உங்கள் தேர்வைக் கேட்க முடியவில்லை. தயவுசெய்து மீண்டும் சொல்லுங்கள்.",
-    "te-IN": "నేను మీ ఎంపికను వినలేకపోతున్నాను. దయచేసి మళ్లీ చెప్పండి.",
-    "ml-IN": "നിങ്ങളുടെ തിരഞ്ഞെടുപ്പ് കേൾക്കാൻ കഴിയുന്നില്ല. ദയവായി ആവർത്തിക്കുക.",
-    "gu-IN": "હું તમારી પસંદગી સાંભળી શકતો નથી. કૃપા કરીને પુનરાવર્તન કરો.",
-    "mr-IN": "मी तुमची निवड ऐकू शकत नाही. कृपया पुन्हा सांगा.",
-    "bn-IN": "আমি আপনার পছন্দ শুনতে পারছি না। অনুগ্রহ করে আবার বলুন।",
-    "kn-IN": "ನಾನು ನಿಮ್ಮ ಆಯ್ಕೆಯನ್ನು ಕೇಳಲು ಸಾಧ್ಯವಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಹೇಳಿ.",
-    "pa-IN": "ਮੈਂ ਤੁਹਾਡੀ ਚੋਣ ਸੁਣ ਨਹੀਂ ਸਕਦੀ। ਕਿਰਪਾ ਕਰਕੇ ਦੁਹਰਾਓ।",
-    "or-IN": "ମୁଁ ଆପଣଙ୍କ ପସନ୍ଦ ଶୁଣି ପାରୁ ନାହିଁ। ଦୟାକରି ପୁନଃ କହନ୍ତୁ।"
-}
-
 async def play_emi_details_part1(websocket, customer_info, lang: str):
     """Plays the first part of EMI details."""
-    try:
-        prompt_text = EMI_DETAILS_PART1_TEMPLATE.get(
-            lang, EMI_DETAILS_PART1_TEMPLATE["en-IN"]
-        ).format(
-            loan_id=customer_info.get('loan_id', 'XXXX'),
-            amount=customer_info.get('amount', 'a certain amount'),
-            due_date=customer_info.get('due_date', 'a recent date')
-        )
-        print(f"[Sarvam TTS] 🔁 Converting EMI part 1: {prompt_text}")
-        audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
-        print(f"[Sarvam TTS] ✅ EMI part 1 audio generated, size: {len(audio_bytes)} bytes")
-        await stream_audio_to_websocket(websocket, audio_bytes)
-        print(f"[Voicebot] ✅ EMI part 1 sent successfully in {lang}")
-    except Exception as e:
-        print(f"[Voicebot] ❌ Error in play_emi_details_part1: {e}")
-        # Fallback to English
-        try:
-            fallback_text = EMI_DETAILS_PART1_TEMPLATE["en-IN"].format(
-                loan_id=customer_info.get('loan_id', 'XXXX'),
-                amount=customer_info.get('amount', 'a certain amount'),
-                due_date=customer_info.get('due_date', 'a recent date')
-            )
-            audio_bytes = await sarvam.synthesize_tts_end(fallback_text, "en-IN")
-            await stream_audio_to_websocket(websocket, audio_bytes)
-            print("[Voicebot] ✅ Fallback EMI part 1 sent in English")
-        except Exception as fallback_e:
-            print(f"[Voicebot] ❌ Error in fallback EMI part 1: {fallback_e}")
+    prompt_text = EMI_DETAILS_PART1_TEMPLATE.get(
+        lang, EMI_DETAILS_PART1_TEMPLATE["en-IN"]
+    ).format(
+        loan_id=customer_info.get('loan_id', 'XXXX'),
+        amount=customer_info.get('amount', 'a certain amount'),
+        due_date=customer_info.get('due_date', 'a recent date')
+    )
+    print(f"[Sarvam TTS] 🔁 Converting EMI part 1: {prompt_text}")
+    audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
+    await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def play_emi_details_part2(websocket, customer_info, lang: str):
     """Plays the second part of EMI details."""
-    try:
-        prompt_text = EMI_DETAILS_PART2_TEMPLATE.get(lang, EMI_DETAILS_PART2_TEMPLATE["en-IN"])
-        print(f"[Sarvam TTS] 🔁 Converting EMI part 2: {prompt_text}")
-        audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
-        print(f"[Sarvam TTS] ✅ EMI part 2 audio generated, size: {len(audio_bytes)} bytes")
-        await stream_audio_to_websocket(websocket, audio_bytes)
-        print(f"[Voicebot] ✅ EMI part 2 sent successfully in {lang}")
-    except Exception as e:
-        print(f"[Voicebot] ❌ Error in play_emi_details_part2: {e}")
-        # Fallback to English
-        try:
-            fallback_text = EMI_DETAILS_PART2_TEMPLATE["en-IN"]
-            audio_bytes = await sarvam.synthesize_tts_end(fallback_text, "en-IN")
-            await stream_audio_to_websocket(websocket, audio_bytes)
-            print("[Voicebot] ✅ Fallback EMI part 2 sent in English")
-        except Exception as fallback_e:
-            print(f"[Voicebot] ❌ Error in fallback EMI part 2: {fallback_e}")
+    prompt_text = EMI_DETAILS_PART2_TEMPLATE.get(lang, EMI_DETAILS_PART2_TEMPLATE["en-IN"])
+    print(f"[Sarvam TTS] 🔁 Converting EMI part 2: {prompt_text}")
+    audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
+    await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def play_agent_connect_question(websocket, lang: str):
     """Asks the user if they want to connect to a live agent."""
-    try:
-        prompt_text = AGENT_CONNECT_TEMPLATE.get(lang, AGENT_CONNECT_TEMPLATE["en-IN"])
-        print(f"[Sarvam TTS] 🔁 Converting agent connect question: {prompt_text}")
-        audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
-        print(f"[Sarvam TTS] ✅ Agent connect question audio generated, size: {len(audio_bytes)} bytes")
-        await stream_audio_to_websocket(websocket, audio_bytes)
-        print(f"[Voicebot] ✅ Agent connect question sent successfully in {lang}")
-    except Exception as e:
-        print(f"[Voicebot] ❌ Error in play_agent_connect_question: {e}")
-        # Fallback to English
-        try:
-            fallback_text = AGENT_CONNECT_TEMPLATE["en-IN"]
-            audio_bytes = await sarvam.synthesize_tts_end(fallback_text, "en-IN")
-            await stream_audio_to_websocket(websocket, audio_bytes)
-            print("[Voicebot] ✅ Fallback agent connect question sent in English")
-        except Exception as fallback_e:
-            print(f"[Voicebot] ❌ Error in fallback agent connect question: {fallback_e}")
+    prompt_text = AGENT_CONNECT_TEMPLATE.get(lang, AGENT_CONNECT_TEMPLATE["en-IN"])
+    print(f"[Sarvam TTS] 🔁 Converting agent connect question: {prompt_text}")
+    audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
+    await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def play_goodbye_after_decline(websocket, lang: str):
     """Plays a goodbye message if the user declines agent connection."""
-    try:
-        prompt_text = GOODBYE_TEMPLATE.get(lang, GOODBYE_TEMPLATE["en-IN"])
-        print(f"[Sarvam TTS] 🔁 Converting goodbye after decline: {prompt_text}")
-        audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
-        print(f"[Sarvam TTS] ✅ Goodbye audio generated, size: {len(audio_bytes)} bytes")
-        await stream_audio_to_websocket(websocket, audio_bytes)
-        print(f"[Voicebot] ✅ Goodbye message sent successfully in {lang}")
-    except Exception as e:
-        print(f"[Voicebot] ❌ Error in play_goodbye_after_decline: {e}")
-        # Fallback to English
-        try:
-            fallback_text = GOODBYE_TEMPLATE["en-IN"]
-            audio_bytes = await sarvam.synthesize_tts_end(fallback_text, "en-IN")
-            await stream_audio_to_websocket(websocket, audio_bytes)
-            print("[Voicebot] ✅ Fallback goodbye message sent in English")
-        except Exception as fallback_e:
-            print(f"[Voicebot] ❌ Error in fallback goodbye message: {fallback_e}")
+    prompt_text = GOODBYE_TEMPLATE.get(lang, GOODBYE_TEMPLATE["en-IN"])
+    print(f"[Sarvam TTS] 🔁 Converting goodbye after decline: {prompt_text}")
+    audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
+    await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def record_audio_from_websocket(websocket) -> bytes:
     call_detected_lang = "en-IN" # Default language, will be updated after first user response
@@ -426,53 +274,18 @@ async def exotel_voicebot(websocket: WebSocket):
     audio_buffer = bytearray()
     last_transcription_time = time.time()
     interaction_complete = False # Flag to stop processing media after the main flow ends
-    customer_info = None # Will be set when we get customer data
-    initial_greeting_played = False # Track if initial greeting was played
-    agent_question_repeat_count = 0 # Track how many times agent question was repeated
 
     try:
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
-            print(f"[WebSocket] 📨 Received message: {msg.get('event', 'unknown')}")
 
             if msg.get("event") == "start":
                 print("[WebSocket] 🔁 Got start event")
-                
-                # Try to get customer info from the call context
-                # In a real implementation, this would come from Exotel webhook
-                # For now, we'll use the first customer from uploaded data
-                if not customer_info and customer_data:
-                    customer_info = customer_data[0]  # Use first customer as default
-                    print(f"[Voicebot] Using customer: {customer_info['name']} - Language: {customer_info['lang']}")
-                elif not customer_info:
-                    # Create a fallback customer if no data is uploaded
-                    customer_info = {
-                        "name": "Customer",
-                        "loan_id": "XXXX",
-                        "amount": "XXXX",
-                        "due_date": "XXXX",
-                        "lang": "en-IN"
-                    }
-                    print("[Voicebot] Using fallback customer data - no CSV uploaded yet")
-                
                 if conversation_stage == "INITIAL_GREETING":
-                    print(f"[Voicebot] 1. Sending initial greeting in {customer_info['lang']}.")
-                    try:
-                        # Play initial greeting in state language from CSV
-                        await greeting_template_play(websocket, customer_info, lang=customer_info['lang'])
-                        print(f"[Voicebot] ✅ Initial greeting sent successfully in {customer_info['lang']}")
-                        initial_greeting_played = True
-                    except Exception as e:
-                        print(f"[Voicebot] ❌ Error sending initial greeting: {e}")
-                        # Try to send a simple test message
-                        try:
-                            test_text = "Hello, this is a test message."
-                            audio_bytes = await sarvam.synthesize_tts_end(test_text, "en-IN")
-                            await stream_audio_to_websocket(websocket, audio_bytes)
-                            print("[Voicebot] ✅ Test message sent successfully")
-                        except Exception as test_e:
-                            print(f"[Voicebot] ❌ Error sending test message: {test_e}")
+                    print("[Voicebot] 1. Sending initial English greeting.")
+                    #await play_initial_greeting(websocket, customer['name'])
+                    await greeting_template_play(websocket, customer, lang=customer['lang'])
                     conversation_stage = "WAITING_FOR_LANG_DETECT"
                 continue
 
@@ -492,108 +305,49 @@ async def exotel_voicebot(websocket: WebSocket):
                     if len(audio_buffer) == 0:
                         if conversation_stage == "WAITING_FOR_LANG_DETECT":
                             print("[Voicebot] No audio received during language detection stage. Playing 'didn't hear' prompt.")
-                            await play_did_not_hear_response(websocket, call_detected_lang)
-                            # Reset the timer to wait for user response
-                            last_transcription_time = time.time()
+                            await play_did_not_hear_response(websocket)
                         elif conversation_stage == "WAITING_AGENT_RESPONSE":
-                            agent_question_repeat_count += 1
-                            if agent_question_repeat_count <= 2:  # Limit to 2 repeats
-                                print(f"[Voicebot] No audio received during agent question stage. Repeating question (attempt {agent_question_repeat_count}/2).")
-                                await play_agent_connect_question(websocket, call_detected_lang)
-                                # Reset the timer to wait for user response
-                                last_transcription_time = time.time()
-                            else:
-                                print("[Voicebot] Too many no-audio responses. Assuming user wants agent transfer.")
-                                customer_number = customer_info.get('phone', '08438019383') if customer_info else "08438019383"
-                                await play_transfer_to_agent(websocket, customer_number=customer_number) 
+                            print("[Voicebot] No audio received during agent question stage. Repeating question.")
+                            await play_agent_connect_question(websocket, call_detected_lang)
+                        audio_buffer.clear()
+                        last_transcription_time = now
+                        continue
+
+                    transcript = sarvam.transcribe_from_payload(audio_buffer)
+                    print(f"[Sarvam ASR] 📝 Transcript: {transcript}")
+
+                    if transcript:
+                        if conversation_stage == "WAITING_FOR_LANG_DETECT":
+                            call_detected_lang = detect_language(transcript)
+                            print(f"[Voicebot] 2. Detected Language: {call_detected_lang} , {customer['lang']}")
+                            if customer['lang'] != call_detected_lang :
+                                await greeting_template_play(websocket, customer, lang=call_detected_lang)
+                            await play_emi_details_part1(websocket, customer, call_detected_lang)
+                            await play_emi_details_part2(websocket, customer, call_detected_lang)
+                            await play_agent_connect_question(websocket, call_detected_lang)
+                            conversation_stage = "WAITING_AGENT_RESPONSE"
+                        
+                        elif conversation_stage == "WAITING_AGENT_RESPONSE":
+                            intent = detect_intent(transcript.lower())
+                            if intent == "affirmative" or "agent_transfer" :
+                                print("[Voicebot] User affirmed agent transfer. Initiating transfer.")
+                                # Replace "08438019383" with the actual customer number from the call context
+                                # This number would typically be available from the Exotel webhook payload at call start
+                                await play_transfer_to_agent(websocket, customer_number="08438019383") 
                                 conversation_stage = "TRANSFERRING_TO_AGENT"
                                 interaction_complete = True
                                 await websocket.close()
                                 print("[WebSocket-TRANSFERRING_TO_AGENT] 🔒 Closed")
                                 break
-                        audio_buffer.clear()
-                        last_transcription_time = now
-                        continue
-
-                    try:
-                        transcript = sarvam.transcribe_from_payload(audio_buffer)
-                        print(f"[Sarvam ASR] 📝 Transcript: {transcript}")
-
-                        if transcript:
-                            if conversation_stage == "WAITING_FOR_LANG_DETECT":
-                                call_detected_lang = detect_language(transcript)
-                                print(f"[Voicebot] 2. Detected Language: {call_detected_lang}")
-                                print(f"[Voicebot] Original language from CSV: {customer_info.get('lang', 'en-IN')}")
-                                
-                                # Check if detected language is different from CSV language
-                                if call_detected_lang != customer_info.get('lang', 'en-IN') and initial_greeting_played:
-                                    print(f"[Voicebot] Language mismatch detected. Replaying greeting in {call_detected_lang}")
-                                    try:
-                                        await greeting_template_play(websocket, customer_info, lang=call_detected_lang)
-                                        print(f"[Voicebot] ✅ Replayed greeting in {call_detected_lang}")
-                                    except Exception as e:
-                                        print(f"[Voicebot] ❌ Error replaying greeting: {e}")
-                                
-                                # Play EMI details in detected language
-                                try:
-                                    await play_emi_details_part1(websocket, customer_info or {}, call_detected_lang)
-                                    await play_emi_details_part2(websocket, customer_info or {}, call_detected_lang)
-                                    await play_agent_connect_question(websocket, call_detected_lang)
-                                    conversation_stage = "WAITING_AGENT_RESPONSE"
-                                    print(f"[Voicebot] ✅ EMI details and agent question sent successfully in {call_detected_lang}")
-                                except Exception as e:
-                                    print(f"[Voicebot] ❌ Error playing EMI details: {e}")
-                            
-                            elif conversation_stage == "WAITING_AGENT_RESPONSE":
-                                # Use Claude for intent detection
-                                try:
-                                    intent = detect_intent_with_claude(transcript, call_detected_lang)
-                                    print(f"[Voicebot] Claude detected intent: {intent}")
-                                except Exception as e:
-                                    print(f"[Voicebot] ❌ Error in Claude intent detection: {e}")
-                                    # Fallback to keyword-based detection
-                                    intent = detect_intent_fur(transcript, call_detected_lang)
-                                    print(f"[Voicebot] Fallback intent detection: {intent}")
-                                
-                                if intent == "affirmative" or intent == "agent_transfer":
-                                    if conversation_stage != "TRANSFERRING_TO_AGENT":  # Prevent multiple transfers
-                                        print("[Voicebot] User affirmed agent transfer. Initiating transfer.")
-                                        customer_number = customer_info.get('phone', '08438019383') if customer_info else "08438019383"
-                                        await play_transfer_to_agent(websocket, customer_number=customer_number) 
-                                        conversation_stage = "TRANSFERRING_TO_AGENT"
-                                        interaction_complete = True
-                                        await websocket.close()
-                                        print("[WebSocket-TRANSFERRING_TO_AGENT] 🔒 Closed")
-                                        break
-                                    else:
-                                        print("[Voicebot] ⚠️ Agent transfer already in progress, ignoring duplicate request")
-                                elif intent == "negative":
-                                    if conversation_stage != "GOODBYE_DECLINE":  # Prevent multiple goodbyes
-                                        print("[Voicebot] User declined agent transfer. Saying goodbye.")
-                                        await play_goodbye_after_decline(websocket, call_detected_lang)
-                                        conversation_stage = "GOODBYE_DECLINE"
-                                        interaction_complete = True
-                                    else:
-                                        print("[Voicebot] ⚠️ Goodbye already sent, ignoring duplicate request")
-                                else:
-                                    agent_question_repeat_count += 1
-                                    if agent_question_repeat_count <= 2:  # Limit to 2 repeats
-                                        print(f"[Voicebot] Unclear response to agent connect. Repeating question (attempt {agent_question_repeat_count}/2).")
-                                        await play_agent_connect_question(websocket, call_detected_lang)
-                                        # Reset the timer to wait for user response
-                                        last_transcription_time = time.time()
-                                    else:
-                                        print("[Voicebot] Too many unclear responses. Assuming user wants agent transfer.")
-                                        customer_number = customer_info.get('phone', '08438019383') if customer_info else "08438019383"
-                                        await play_transfer_to_agent(websocket, customer_number=customer_number) 
-                                        conversation_stage = "TRANSFERRING_TO_AGENT"
-                                        interaction_complete = True
-                                        await websocket.close()
-                                        print("[WebSocket-TRANSFERRING_TO_AGENT] 🔒 Closed")
-                                        break
-                            # Add more elif conditions here for additional conversation stages if your flow extends
-                    except Exception as e:
-                        print(f"[Voicebot] ❌ Error processing transcript: {e}")
+                            elif intent == "negative":
+                                print("[Voicebot] User declined agent transfer. Saying goodbye.")
+                                await play_goodbye_after_decline(websocket, call_detected_lang)
+                                conversation_stage = "GOODBYE_DECLINE"
+                                interaction_complete = True
+                            else:
+                                print("[Voicebot] Unclear response to agent connect. Repeating question.")
+                                await play_agent_connect_question(websocket, call_detected_lang)
+                        # Add more elif conditions here for additional conversation stages if your flow extends
 
                     audio_buffer.clear()
                     last_transcription_time = now
@@ -610,11 +364,7 @@ async def exotel_voicebot(websocket: WebSocket):
 def detect_language(text):
     text = text.strip().lower()
 
-    # Check for Punjabi first (Gurmukhi script)
-    if any(word in text for word in ["ਹਾਂ", "ਜੀ", "ਬਿਲਕੁਲ", "ਜੋੜ", "ਕਨੈਕਟ"]) or _is_gurmukhi(text):
-        return "pa-IN"
-    # Check for Hindi/Devanagari
-    if any(word in text for word in ["नमस्ते", "हां", "नहीं", "कैसे", "आप", "जी", "बिलकुल", "जोड़", "कनेक्ट"]) or _is_devanagari(text):
+    if any(word in text for word in ["नमस्ते", "हां", "नहीं", "कैसे", "आप"]) or _is_devanagari(text):
         return "hi-IN"
     if any(word in text for word in ["வணக்கம்", "ஆம்", "இல்லை", "எப்படி"]) or _is_tamil(text):
         return "ta-IN"
@@ -636,40 +386,9 @@ def _is_telugu(text):
 def _is_kannada(text):
     return any('\u0C80' <= ch <= '\u0CFF' for ch in text)
 
-def _is_gurmukhi(text):
-    return any('\u0A00' <= ch <= '\u0A7F' for ch in text)
-
-def detect_intent_with_claude(text: str, lang_code: str = "en-IN") -> str:
-    """Use Claude to detect intent from user input"""
-    try:
-        # Create a simple chat history format for Claude
-        chat_history = [{"sender": "user", "message": text}]
-        
-        # Use Claude to classify intent
-        intent = bedrock_client.get_intent_from_text(chat_history)
-        print(f"[Claude Intent] Raw response: {intent}")
-        
-        # Map Claude's intent to our flow intents
-        if intent in ["emi", "balance", "loan", "agent_transfer"]:
-            return "agent_transfer"  # These intents should trigger agent transfer
-        elif intent in ["yes", "affirmative", "positive", "okay", "sure", "fine", "alright"]:
-            return "affirmative"  # Positive responses
-        elif intent in ["no", "negative", "decline", "not", "don't", "won't"]:
-            return "negative"  # Negative responses
-        elif intent == "unclear":
-            # Fall back to keyword-based detection for unclear cases
-            return detect_intent_fur(text, lang_code)
-        else:
-            # Fall back to keyword-based detection
-            return detect_intent_fur(text, lang_code)
-            
-    except Exception as e:
-        print(f"[Claude Intent] ❌ Error: {e}")
-        # Fall back to keyword-based detection
-        return detect_intent_fur(text, lang_code)
-
 def detect_intent(text):
-    """Legacy intent detection - kept for fallback"""
+    # This intent detection is simplified for the flow provided by the user.
+    # For a production system, consider a more robust NLU solution (e.g., fine-tuned LLM, Rasa, Dialogflow).
     print(f"detect_intent: {text}")
     if any(word in text for word in ["agent", "live agent", "speak to someone", "transfer", "help desk"]):
         return "agent_transfer"
@@ -678,7 +397,7 @@ def detect_intent(text):
                                        "ஆம்", "ஆமாம்", "சரி", "தயார்", "பேசுங்கள்", "இயலும்", "தொடங்கு", "ஆம் சரி", "வாங்க", "நிச்சயம்",
                                        "ശരി", "അതെ", "തുടങ്ങി", "സരി", "നിശ്ചയം", "തയ്യാര്", "ആണേ", "ഓക്കേ",
                                        "అవును", "సరే", "చెప్పు", "తప్పకుండా", "అలాగే", "కనీసం", "తయారు", "ఓకే",
-                                       "ಹೌದು", "ಸರಿ", "ಹೇಳಿ", "ತಯారು", "ನಿಶ್ಚಿತವಾಗಿ", "ಬನ್ನಿ", "ಓಕೆ", "ಶರುವಮಾಡಿ"
+                                       "ಹೌದು", "ಸರಿ", "ಹೇಳಿ", "ತಯಾರು", "ನಿಶ್ಚಿತವಾಗಿ", "ಬನ್ನಿ", "ಓಕೆ", "ಶರುವಮಾಡಿ"
                                        ]):
         return "affirmative"
     elif any(word in text for word in ["no", "not now", "later", "nah", "nahi", "இல்லை", "காது", "ನಹಿ"]):
@@ -693,9 +412,7 @@ AFFIRMATIVE_KEYWORDS = {
     "ta": ["ஆம்", "ஆமாம்", "சரி", "தயார்", "பேசுங்கள்", "இயலும்", "தொடங்கு", "ஆம் சரி", "வாங்க", "நிச்சயம்"],
     "ml": ["ശരി", "അതെ", "തുടങ്ങി", "സരി", "നിശ്ചയം", "തയ്യാര്", "ആണേ", "ഓക്കേ"],
     "te": ["అవును", "సరే", "చెప్పు", "తప్పకుండా", "అలాగే", "కనీసం", "తయారు", "ఓకే"],
-    "kn": ["ಹೌದು", "ಸರಿ", "ಹೇಳಿ", "ತಯಾರು", "ನಿಶ್ಚಿತವಾಗಿ", "ಬನ್ನಿ", "ಓಕೆ", "ಶರುವಮಾಡಿ"],
-    "hi": ["हां", "हाँ", "जी", "बिलकुल", "ठीक", "सही", "हाँ जी", "बिलकुल जी", "जोड़", "जोड़ जी", "कनेक्ट", "कनेक्ट करो", "जोड़ दो", "जोड़ दीजिए", "हाँ बिलकुल", "बिलकुल हाँ", "जी बिलकुल", "जी बिलकुल जोड़ जी"],
-    "pa": ["ਹਾਂ", "ਜੀ", "ਬਿਲਕੁਲ", "ਠੀਕ", "ਸਹੀ", "ਹਾਂ ਜੀ", "ਬਿਲਕੁਲ ਜੀ", "ਜੋੜ", "ਜੋੜ ਜੀ", "ਕਨੈਕਟ", "ਕਨੈਕਟ ਕਰੋ", "ਜੋੜ ਦੋ", "ਜੋੜ ਦੀਜੀਏ", "ਹਾਂ ਬਿਲਕੁਲ", "ਬਿਲਕੁਲ ਹਾਂ", "ਜੀ ਬਿਲਕੁਲ", "ਜੀ ਬਿਲਕੁਲ ਜੋੜ ਜੀ"]
+    "kn": ["ಹೌದು", "ಸರಿ", "ಹೇಳಿ", "ತಯಾರು", "ನಿಶ್ಚಿತವಾಗಿ", "ಬನ್ನಿ", "ಓಕೆ", "ಶರುವಮಾಡಿ"]
 }
 
 NEGATIVE_KEYWORDS = {
@@ -703,9 +420,7 @@ NEGATIVE_KEYWORDS = {
     "ta": ["இல்லை", "வேண்டாம்", "இப்போது இல்லை", "பின்னர்", "இல்ல"] ,
     "ml": ["ഇല്ല", "വേണ്ട", "ഇപ്പോൾ ഇല്ല", "പിന്നീട്"],
     "te": ["కాదు", "వద్దు", "ఇప్పుడవసరం లేదు", "తరువాత"],
-    "kn": ["ಇಲ್ಲ", "ಬೇಡ", "ಇಲ್ಲವೇ", "ನಂತರ", "ಇದೀಗ ಬೇಡ"],
-    "hi": ["नहीं", "नही", "नहि", "मत", "नहीं जी", "नहीं करो", "नहीं चाहिए", "बाद में", "अभी नहीं"],
-    "pa": ["ਨਹੀਂ", "ਨਹੀ", "ਨਹਿ", "ਮਤ", "ਨਹੀਂ ਜੀ", "ਨਹੀਂ ਕਰੋ", "ਨਹੀਂ ਚਾਹੀਦਾ", "ਬਾਅਦ ਵਿੱਚ", "ਹੁਣ ਨਹੀਂ"]
+    "kn": ["ಇಲ್ಲ", "ಬೇಡ", "ಇಲ್ಲವೇ", "ನಂತರ", "ಇದೀಗ ಬೇಡ"]
 }
 def detect_intent_fur(transcript: str, lang_code: str) -> str:
     cleaned = transcript.lower().translate(str.maketrans('', '', string.punctuation)).strip()
@@ -775,27 +490,21 @@ async def play_transfer_to_agent(websocket, customer_number: str):
 
 
 async def stream_audio_to_websocket(websocket, audio_bytes):
-    print(f"[stream_audio_to_websocket] Streaming {len(audio_bytes)} bytes")
+    print("stream_audio_to_websocket")
     if not audio_bytes:
         print("[stream_audio_to_websocket] ❌ No audio bytes to stream.")
         return
-    try:
-        chunk_count = 0
-        for i in range(0, len(audio_bytes), CHUNK_SIZE):
-            chunk = audio_bytes[i:i + CHUNK_SIZE]
-            if not chunk:
-                continue
-            b64_chunk = base64.b64encode(chunk).decode("utf-8")
-            response_msg = {
-                "event": "media",
-                "media": {"payload": b64_chunk}
-            }
-            await websocket.send_json(response_msg)
-            chunk_count += 1
-            await asyncio.sleep(0.02) # Small delay to simulate real-time streaming
-        print(f"[stream_audio_to_websocket] ✅ Streamed {chunk_count} chunks successfully")
-    except Exception as e:
-        print(f"[stream_audio_to_websocket] ❌ Error streaming audio: {e}")
+    for i in range(0, len(audio_bytes), CHUNK_SIZE):
+        chunk = audio_bytes[i:i + CHUNK_SIZE]
+        if not chunk:
+            continue
+        b64_chunk = base64.b64encode(chunk).decode("utf-8")
+        response_msg = {
+            "event": "media",
+            "media": {"payload": b64_chunk}
+        }
+        await websocket.send_json(response_msg)
+        await asyncio.sleep(0.02) # Small delay to simulate real-time streaming
 
 # --- Outbound Call Trigger Function (used by dashboard) ---
 
@@ -866,7 +575,50 @@ async def trigger_exotel_customer_call(customer_info, status_callback_url=None):
     except Exception as e:
         return {"phone": customer_info.get('phone'), "status": f"exception: {e}", "payload": payload}
 
-# --- State to Language Mapping (already defined above) ---
+# --- State to Language Mapping ---
+STATE_TO_LANGUAGE = {
+    'andhra pradesh': 'te-IN',
+    'arunachal pradesh': 'hi-IN',
+    'assam': 'hi-IN',
+    'bihar': 'hi-IN',
+    'chhattisgarh': 'hi-IN',
+    'goa': 'hi-IN',
+    'gujarat': 'gu-IN',
+    'haryana': 'hi-IN',
+    'himachal pradesh': 'hi-IN',
+    'jharkhand': 'hi-IN',
+    'karnataka': 'kn-IN',
+    'kerala': 'ml-IN',
+    'madhya pradesh': 'hi-IN',
+    'maharashtra': 'mr-IN',
+    'manipur': 'hi-IN',
+    'meghalaya': 'hi-IN',
+    'mizoram': 'hi-IN',
+    'nagaland': 'hi-IN',
+    'odisha': 'or-IN',
+    'punjab': 'pa-IN',
+    'rajasthan': 'hi-IN',
+    'sikkim': 'hi-IN',
+    'tamil nadu': 'ta-IN',
+    'telangana': 'te-IN',
+    'tripura': 'hi-IN',
+    'uttar pradesh': 'hi-IN',
+    'uttarakhand': 'hi-IN',
+    'west bengal': 'bn-IN',
+    'delhi': 'hi-IN',
+    'puducherry': 'ta-IN',
+    'chandigarh': 'hi-IN',
+    'andaman and nicobar islands': 'hi-IN',
+    'dadra and nagar haveli and daman and diu': 'hi-IN',
+    'jammu and kashmir': 'hi-IN',
+    'ladakh': 'hi-IN',
+    'lakshadweep': 'ml-IN',
+}
+
+def get_initial_language_from_state(state: str) -> str:
+    if not state:
+        return 'en-IN'
+    return STATE_TO_LANGUAGE.get(state.strip().lower(), 'en-IN')
 
 # --- TEST MODE for Exotel API (set to True to mock calls) ---
 
@@ -899,30 +651,11 @@ async def trigger_bulk_calls(customers: list = Body(...)):
 @app.websocket("/ws")
 async def websocket_trigger_call(websocket: WebSocket):
     """
-    WebSocket endpoint for the dashboard to trigger outbound Exotel calls and share customer data.
+    WebSocket endpoint for the dashboard to trigger outbound Exotel calls.
     Expects JSON messages like: `{"action": "trigger-call", "customer_number": "+91XXXXXXXXXX"}`
     """
     await websocket.accept()
     print("[WebSocket /ws] Dashboard client connected. Waiting for call trigger messages ---.")
-    
-    # Send customer data to the frontend
-    try:
-        await websocket.send_json({
-            "action": "customer_data",
-            "data": customer_data
-        })
-        print(f"[WebSocket /ws] Sent {len(customer_data)} customers to dashboard")
-    except Exception as e:
-        print(f"[WebSocket /ws] Error sending customer data: {e}")
-        # Send empty data if there's an error
-        try:
-            await websocket.send_json({
-                "action": "customer_data",
-                "data": []
-            })
-        except:
-            pass
-    
     try:
         while True:
             data = await websocket.receive_text()
@@ -934,33 +667,13 @@ async def websocket_trigger_call(websocket: WebSocket):
                 if action == "trigger-call" and customer_number:
                     print(f"📞 Triggering Exotel call to {customer_number} from dashboard...")
                     try:
-                        # Find customer data for this number
-                        customer_info = get_customer_by_phone(customer_number)
-                        if customer_info:
-                            print(f"[Call] Using customer data: {customer_info['name']} - {customer_info['lang']}")
-                        else:
-                            print(f"[Call] No customer data found for {customer_number}, using fallback")
-                            customer_info = {
-                                "name": "Customer",
-                                "loan_id": "XXXX",
-                                "amount": "XXXX",
-                                "due_date": "XXXX",
-                                "lang": "en-IN"
-                            }
-                        
                         await trigger_exotel_call_async(customer_number)
                         await websocket.send_text(f"📞 Call triggered to {customer_number} successfully.")
                     except Exception as e:
                         await websocket.send_text(f"❌ Error triggering call: {e}")
-                elif action == "get-customer-data":
-                    # Send current customer data if requested
-                    await websocket.send_json({
-                        "action": "customer_data",
-                        "data": customer_data
-                    })
                 else:
                     await websocket.send_text(f"Received unknown or incomplete message: {data}. "
-                                             "Expected: {'action': 'trigger-call', 'customer_number': '+91XXXXXXXXXX'} or {'action': 'get-customer-data'}")
+                                             "Expected: {'action': 'trigger-call', 'customer_number': '+91XXXXXXXXXX'}")
             except json.JSONDecodeError:
                 await websocket.send_text(f"Received non-JSON message: {data}. Expected JSON for call trigger.")
                 
@@ -972,7 +685,7 @@ async def websocket_trigger_call(websocket: WebSocket):
 @app.post("/upload-customers/")
 async def upload_customers(file: UploadFile = File(...)):
     """
-    Accepts an Excel or CSV file, extracts customer details, processes them, and returns them for dashboard display.
+    Accepts an Excel or CSV file, extracts customer details, and returns them for dashboard display.
     Expects columns: name, phone, loan_id, amount, due_date, state
     """
     if not file.filename.endswith((".xls", ".xlsx", ".csv")):
@@ -997,99 +710,6 @@ async def upload_customers(file: UploadFile = File(...)):
                 "phone": str(row["phone"])
             }
             extracted.append(customer_info)
-        
-        # Process the uploaded data and store it globally
-        process_uploaded_customers(extracted)
-        
-        return {"customers": extracted, "message": f"Successfully uploaded and processed {len(extracted)} customers"}
+        return {"customers": extracted}
     except Exception as e:
         return {"error": str(e)}
-
-@app.post("/reload-customers/")
-async def reload_customers():
-    """
-    Clear customer data (since we no longer load from CSV file)
-    """
-    try:
-        global customer_data
-        customer_data = []
-        return {"message": "Customer data cleared. Please upload a new CSV file.", "count": 0}
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/customers/")
-async def get_customers():
-    """
-    Get all customer data
-    """
-    return {"customers": customer_data, "count": len(customer_data)}
-
-@app.get("/test-voice/")
-async def test_voice():
-    """
-    Test endpoint to verify voice templates are working
-    """
-    try:
-        # Test with a sample customer
-        test_customer = {
-            "name": "Test Customer",
-            "loan_id": "1234",
-            "amount": "5000",
-            "due_date": "2024-08-15",
-            "lang": "en-IN"
-        }
-        
-        # Test template generation
-        greeting = GREETING_TEMPLATE.get("en-IN", "").format(name=test_customer['name'])
-        emi_part1 = EMI_DETAILS_PART1_TEMPLATE.get("en-IN", "").format(
-            loan_id=test_customer['loan_id'],
-            amount=test_customer['amount'],
-            due_date=test_customer['due_date']
-        )
-        
-        return {
-            "status": "success",
-            "customer": test_customer,
-            "greeting_template": greeting,
-            "emi_part1_template": emi_part1,
-            "customer_data_loaded": len(customer_data),
-            "templates_available": {
-                "greeting": len(GREETING_TEMPLATE),
-                "emi_part1": len(EMI_DETAILS_PART1_TEMPLATE),
-                "emi_part2": len(EMI_DETAILS_PART2_TEMPLATE),
-                "agent_connect": len(AGENT_CONNECT_TEMPLATE),
-                "goodbye": len(GOODBYE_TEMPLATE)
-            }
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.get("/test-voice-audio/")
-async def test_voice_audio():
-    """
-    Test endpoint to verify TTS is working
-    """
-    try:
-        test_text = "Hello, this is a test message from the voice assistant."
-        audio_bytes = await sarvam.synthesize_tts_end(test_text, "en-IN")
-        
-        return {
-            "status": "success",
-            "message": "TTS test completed",
-            "audio_size": len(audio_bytes),
-            "text": test_text
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.get("/test-stream-websocket/")
-async def test_stream_websocket():
-    """
-    Test endpoint to check if stream WebSocket is accessible
-    """
-    return {
-        "status": "success",
-        "message": "Stream WebSocket endpoint is available",
-        "endpoint": "/stream",
-        "customer_data_count": len(customer_data)
-    }
