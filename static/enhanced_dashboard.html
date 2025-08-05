@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Assistant Call Management Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f7fa;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 0;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            border: 1px solid #e1e8ed;
+        }
+
+        .card h3 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-size: 1.3em;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .file-upload-area {
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            background: #f8f9ff;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+
+        .file-upload-area:hover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+        }
+
+        .file-upload-area.dragover {
+            border-color: #28a745;
+            background: #f0fff4;
+        }
+
+        .upload-button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: background 0.3s;
+        }
+
+        .upload-button:hover {
+            background: #5a6fd8;
+        }
+
+        .upload-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .customer-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        .customer-table th,
+        .customer-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e1e8ed;
+        }
+
+        .customer-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .customer-table tr:hover {
+            background: #f8f9ff;
+        }
+
+        .call-button {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: background 0.3s;
+        }
+
+        .call-button:hover {
+            background: #218838;
+        }
+
+        .call-button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+
+        .transfer-button {
+            background: #ffc107;
+            color: #212529;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: background 0.3s;
+            margin-left: 5px;
+        }
+
+        .transfer-button:hover {
+            background: #e0a800;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-initiated { background: #e3f2fd; color: #1976d2; }
+        .status-ringing { background: #fff3e0; color: #f57c00; }
+        .status-in-progress { background: #e8f5e8; color: #388e3c; }
+        .status-completed { background: #e8f5e8; color: #2e7d32; }
+        .status-failed { background: #ffebee; color: #d32f2f; }
+        .status-agent-transfer { background: #f3e5f5; color: #7b1fa2; }
+
+        .statistics-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+
+        .stat-number {
+            font-size: 2em;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #6c757d;
+            font-size: 0.9em;
+        }
+
+        .logs-area {
+            background: #1e1e1e;
+            color: #e0e0e0;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            max-height: 400px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+            padding: 3px 0;
+        }
+
+        .log-timestamp {
+            color: #888;
+            margin-right: 10px;
+        }
+
+        .log-success { color: #4caf50; }
+        .log-error { color: #f44336; }
+        .log-warning { color: #ff9800; }
+        .log-info { color: #2196f3; }
+
+        .connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 0.9em;
+            z-index: 1000;
+        }
+
+        .connection-connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .connection-disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .bulk-actions {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .bulk-button {
+            background: #6f42c1;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-right: 10px;
+            font-size: 1em;
+        }
+
+        .bulk-button:hover {
+            background: #5a359a;
+        }
+
+        .bulk-button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+
+        /* Preview Section Styles */
+        #filePreviewCard {
+            border: 2px solid #e3f2fd;
+            background: #f8f9fa;
+        }
+
+        #filePreviewCard h3 {
+            color: #1976d2;
+            border-bottom: 2px solid #e3f2fd;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+
+        #previewSummary {
+            background: #e8f5e8;
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 4px solid #4caf50;
+        }
+
+        .preview-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: space-between;
+            margin-top: 15px;
+        }
+
+        .preview-button {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .preview-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .statistics-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .container {
+                padding: 10px;
+            }
+            
+            .preview-actions {
+                flex-direction: column;
+            }
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 15px 20px;
+            border-radius: 6px;
+            color: white;
+            font-weight: 600;
+            z-index: 1001;
+            transform: translateX(400px);
+            transition: transform 0.3s ease;
+        }
+
+        .toast.show {
+            transform: translateX(0);
+        }
+
+        .toast.success { background: #28a745; }
+        .toast.error { background: #dc3545; }
+        .toast.warning { background: #ffc107; color: #212529; }
+        .toast.info { background: #17a2b8; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎙️ Voice Assistant Call Management</h1>
+        <p>Real-time call management with Redis session tracking</p>
+    </div>
+
+    <div class="connection-status" id="connectionStatus">Connecting...</div>
+
+    <div class="container">
+        <!-- Statistics Overview -->
+        <div class="statistics-grid">
+            <div class="stat-card">
+                <div class="stat-number" id="totalCallsStat">0</div>
+                <div class="stat-label">Total Calls</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="activeCallsStat">0</div>
+                <div class="stat-label">Active Calls</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="completedCallsStat">0</div>
+                <div class="stat-label">Completed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="failedCallsStat">0</div>
+                <div class="stat-label">Failed</div>
+            </div>
+        </div>
+
+        <!-- Dashboard Grid -->
+        <div class="dashboard-grid">
+            <!-- File Upload Section -->
+            <div class="card">
+                <h3>📁 Customer Data Upload</h3>
+                
+                <div class="file-upload-area" id="fileUploadArea">
+                    <p>📄 Drag & drop your CSV/Excel file here</p>
+                    <p style="margin: 10px 0;">or</p>
+                    <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" style="display: none;">
+                    <button class="upload-button" onclick="document.getElementById('fileInput').click()">
+                        Choose File
+                    </button>
+                </div>
+
+                <div id="uploadStatus" class="log-entry"></div>
+            </div>
+
+            <!-- File Preview Section -->
+            <div class="card" id="filePreviewCard" style="display: none;">
+                <h3>📋 Upload Preview</h3>
+                
+                <div id="previewSummary" class="log-entry" style="margin-bottom: 15px;"></div>
+                
+                <div style="overflow-x: auto; max-height: 300px; overflow-y: auto; margin-bottom: 15px;">
+                    <table class="customer-table" id="previewTable">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Phone</th>
+                                <th>Loan ID</th>
+                                <th>Amount</th>
+                                <th>Due Date</th>
+                                <th>State</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="previewTableBody">
+                            <!-- Preview rows will be populated here -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="bulk-actions">
+                    <button class="bulk-button" id="confirmUploadButton" style="background: #4caf50;">
+                        ✅ Confirm & Add to Database
+                    </button>
+                    <button class="bulk-button" id="triggerAllPreviewButton" style="background: #ff9800;">
+                        📞 Trigger Calls to All
+                    </button>
+                    <button class="bulk-button" id="cancelUploadButton" style="background: #f44336;">
+                        ❌ Cancel Upload
+                    </button>
+                </div>
+            </div>
+
+            <!-- Call Management Section -->
+            <div class="card">
+                <h3>📞 Call Management</h3>
+                
+                <div class="bulk-actions">
+                    <button class="bulk-button" id="callAllButton" disabled>
+                        📞 Call All Customers
+                    </button>
+                    <button class="bulk-button" id="callSelectedButton" disabled>
+                        📞 Call Selected
+                    </button>
+                </div>
+
+                <div>
+                    <label for="singleCallNumber">Single Call:</label>
+                    <input type="text" id="singleCallNumber" placeholder="+91XXXXXXXXXX" style="margin: 10px 0; padding: 8px; width: 100%; border: 1px solid #ddd; border-radius: 4px;">
+                    <button class="call-button" id="singleCallButton">📞 Trigger Call</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Customer Table -->
+        <div class="card">
+            <h3>👥 Customer Database</h3>
+            
+            <div style="overflow-x: auto;">
+                <table class="customer-table" id="customerTable">
+                    <thead>
+                        <tr>
+                            <th><input type="checkbox" id="selectAll"></th>
+                            <th>Name</th>
+                            <th>Phone</th>
+                            <th>Loan ID</th>
+                            <th>Amount</th>
+                            <th>Due Date</th>
+                            <th>State</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="customerTableBody">
+                        <!-- Customer rows will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Real-time Call Status -->
+        <div class="card">
+            <h3>🔄 Real-time Call Status</h3>
+            <div id="callStatusContainer">
+                <p>No active calls</p>
+            </div>
+        </div>
+
+        <!-- System Logs -->
+        <div class="card">
+            <h3>📋 System Logs</h3>
+            <div class="logs-area" id="systemLogs">
+                <div class="log-entry">
+                    <span class="log-timestamp">Loading...</span>
+                    <span class="log-info">Initializing dashboard...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class VoiceAssistantDashboard {
+            constructor() {
+                this.ws = null;
+                this.websocketId = null;
+                this.customers = [];
+                this.activeCalls = new Map();
+                this.reconnectAttempts = 0;
+                this.maxReconnectAttempts = 5;
+                this.reconnectDelay = 5000;
+                
+                this.initializeComponents();
+                this.connectWebSocket();
+            }
+
+            initializeComponents() {
+                // File upload setup
+                this.setupFileUpload();
+                
+                // Button event listeners
+                document.getElementById('singleCallButton').addEventListener('click', () => {
+                    this.triggerSingleCall();
+                });
+                
+                document.getElementById('callAllButton').addEventListener('click', () => {
+                    this.triggerBulkCalls();
+                });
+                
+                document.getElementById('callSelectedButton').addEventListener('click', () => {
+                    this.triggerSelectedCalls();
+                });
+                
+                document.getElementById('selectAll').addEventListener('change', (e) => {
+                    this.toggleAllSelection(e.target.checked);
+                });
+            }
+
+            setupFileUpload() {
+                const fileInput = document.getElementById('fileInput');
+                const uploadArea = document.getElementById('fileUploadArea');
+
+                fileInput.addEventListener('change', (e) => {
+                    this.handleFileUpload(e.target.files[0]);
+                });
+
+                // Drag and drop
+                uploadArea.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    uploadArea.classList.add('dragover');
+                });
+
+                uploadArea.addEventListener('dragleave', () => {
+                    uploadArea.classList.remove('dragover');
+                });
+
+                uploadArea.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    uploadArea.classList.remove('dragover');
+                    this.handleFileUpload(e.dataTransfer.files[0]);
+                });
+            }
+
+            async handleFileUpload(file) {
+                if (!file) return;
+
+                this.updateUploadStatus('Processing file...', 'info');
+                this.currentFile = file; // Store the file for later upload
+                
+                try {
+                    // Parse the file locally first to show preview
+                    const fileContent = await this.parseFileForPreview(file);
+                    this.showFilePreview(fileContent);
+                } catch (error) {
+                    this.updateUploadStatus(`❌ File processing error: ${error.message}`, 'error');
+                    this.showToast('File processing failed!', 'error');
+                }
+            }
+
+            async parseFileForPreview(file) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    
+                    reader.onload = (e) => {
+                        try {
+                            const data = e.target.result;
+                            let parsedData = [];
+                            
+                            if (file.name.endsWith('.csv')) {
+                                // Parse CSV
+                                const lines = data.split('\n');
+                                const headers = lines[0].split(',').map(h => h.trim());
+                                
+                                for (let i = 1; i < lines.length; i++) {
+                                    if (lines[i].trim()) {
+                                        const values = lines[i].split(',').map(v => v.trim());
+                                        const customer = {};
+                                        headers.forEach((header, index) => {
+                                            customer[header.toLowerCase()] = values[index] || '';
+                                        });
+                                        parsedData.push(customer);
+                                    }
+                                }
+                            } else {
+                                // For Excel files, we'll need to handle them differently
+                                // For now, show a message that Excel preview will be implemented
+                                reject(new Error('Excel preview not implemented yet. Use CSV for preview.'));
+                                return;
+                            }
+                            
+                            resolve(parsedData);
+                        } catch (error) {
+                            reject(error);
+                        }
+                    };
+                    
+                    reader.onerror = () => reject(new Error('Failed to read file'));
+                    reader.readAsText(file);
+                });
+            }
+
+            showFilePreview(customers) {
+                const previewCard = document.getElementById('filePreviewCard');
+                const previewSummary = document.getElementById('previewSummary');
+                const previewTableBody = document.getElementById('previewTableBody');
+                
+                // Update summary
+                previewSummary.innerHTML = `
+                    <span class="log-info">📊 Found ${customers.length} customers in file "${this.currentFile.name}"</span>
+                `;
+                
+                // Clear and populate preview table
+                previewTableBody.innerHTML = '';
+                
+                customers.slice(0, 10).forEach((customer, index) => { // Show first 10 rows
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${customer.name || 'N/A'}</td>
+                        <td>${customer.phone || customer.phone_number || 'N/A'}</td>
+                        <td>${customer.loan_id || customer.loanid || 'N/A'}</td>
+                        <td>${customer.amount || 'N/A'}</td>
+                        <td>${customer.due_date || customer.duedate || 'N/A'}</td>
+                        <td>${customer.state || 'N/A'}</td>
+                        <td><span class="status-badge status-initiated">Ready</span></td>
+                    `;
+                    previewTableBody.appendChild(row);
+                });
+                
+                // Add "show more" indicator if there are more rows
+                if (customers.length > 10) {
+                    const moreRow = document.createElement('tr');
+                    moreRow.innerHTML = `
+                        <td colspan="7" style="text-align: center; color: #666; font-style: italic;">
+                            ... and ${customers.length - 10} more customers
+                        </td>
+                    `;
+                    previewTableBody.appendChild(moreRow);
+                }
+                
+                // Store customers data for later use
+                this.previewCustomers = customers;
+                
+                // Show the preview card
+                previewCard.style.display = 'block';
+                
+                // Setup preview action buttons
+                this.setupPreviewActions();
+                
+                this.updateUploadStatus('✅ File parsed successfully. Review the preview above.', 'success');
+            }
+
+            setupPreviewActions() {
+                // Confirm upload button
+                document.getElementById('confirmUploadButton').onclick = async () => {
+                    await this.confirmUpload();
+                };
+                
+                // Trigger calls to all button
+                document.getElementById('triggerAllPreviewButton').onclick = async () => {
+                    await this.triggerCallsToAll();
+                };
+                
+                // Cancel upload button
+                document.getElementById('cancelUploadButton').onclick = () => {
+                    this.cancelUpload();
+                };
+            }
+
+            async confirmUpload() {
+                if (!this.currentFile) return;
+                
+                this.updateUploadStatus('Uploading to database...', 'info');
+                
+                const formData = new FormData();
+                formData.append('file', this.currentFile);
+                if (this.websocketId) {
+                    formData.append('websocket_id', this.websocketId);
+                }
+
+                try {
+                    const response = await fetch('/api/upload-customers', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.updateUploadStatus(
+                            `✅ Successfully uploaded ${result.processed_records} customers to database`, 
+                            'success'
+                        );
+                        this.showToast('File uploaded successfully!', 'success');
+                        this.hidePreview();
+                        this.updateCustomerTable();
+                    } else {
+                        this.updateUploadStatus(`❌ Upload failed: ${result.error}`, 'error');
+                        this.showToast('Upload failed!', 'error');
+                    }
+                } catch (error) {
+                    this.updateUploadStatus(`❌ Upload error: ${error.message}`, 'error');
+                    this.showToast('Upload error!', 'error');
+                }
+            }
+
+            async triggerCallsToAll() {
+                if (!this.previewCustomers || this.previewCustomers.length === 0) return;
+                
+                this.updateUploadStatus('Triggering calls to all customers...', 'info');
+                
+                try {
+                    // Trigger calls directly from preview data
+                    const response = await fetch('/api/trigger-bulk-calls', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            customer_data: this.previewCustomers,
+                            websocket_id: this.websocketId
+                        })
+                    });
+
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.updateUploadStatus(
+                            `🚀 Successfully triggered ${result.total_calls} calls (${result.successful_calls} successful, ${result.failed_calls} failed)`, 
+                            'success'
+                        );
+                        this.showToast(`Triggered ${result.successful_calls}/${result.total_calls} calls!`, 'success');
+                    } else {
+                        this.updateUploadStatus(`❌ Failed to trigger calls: ${result.error}`, 'error');
+                        this.showToast('Failed to trigger calls!', 'error');
+                    }
+                } catch (error) {
+                    this.updateUploadStatus(`❌ Error triggering calls: ${error.message}`, 'error');
+                    this.showToast('Error triggering calls!', 'error');
+                }
+            }
+
+            cancelUpload() {
+                this.hidePreview();
+                this.currentFile = null;
+                this.previewCustomers = null;
+                this.updateUploadStatus('Upload cancelled', 'warning');
+            }
+
+            hidePreview() {
+                document.getElementById('filePreviewCard').style.display = 'none';
+            }
+
+            connectWebSocket() {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const hostname = window.location.hostname;
+                const port = window.location.port ? `:${window.location.port}` : '';
+                
+                this.ws = new WebSocket(`${protocol}//${hostname}${port}/ws`);
+
+                this.ws.onopen = () => {
+                    this.log('WebSocket connected successfully', 'success');
+                    this.updateConnectionStatus(true);
+                    this.reconnectAttempts = 0;
+                };
+
+                this.ws.onmessage = (event) => {
+                    this.handleWebSocketMessage(JSON.parse(event.data));
+                };
+
+                this.ws.onclose = () => {
+                    this.log('WebSocket disconnected', 'warning');
+                    this.updateConnectionStatus(false);
+                    this.scheduleReconnect();
+                };
+
+                this.ws.onerror = (error) => {
+                    this.log(`WebSocket error: ${error}`, 'error');
+                    this.updateConnectionStatus(false);
+                };
+            }
+
+            handleWebSocketMessage(message) {
+                const { type, data, timestamp } = message;
+
+                switch (type) {
+                    case 'connection_established':
+                        this.websocketId = message.websocket_id;
+                        this.log(`Session established: ${this.websocketId}`, 'success');
+                        break;
+
+                    case 'dashboard_data':
+                        this.updateDashboardData(data);
+                        break;
+
+                    case 'file_processed':
+                        this.handleFileProcessed(data);
+                        break;
+
+                    case 'call_triggered':
+                        this.handleCallTriggered(data);
+                        break;
+
+                    case 'status_update':
+                        this.handleStatusUpdate(message);
+                        break;
+
+                    case 'bulk_calls_triggered':
+                        this.handleBulkCallsTriggered(data);
+                        break;
+
+                    case 'error':
+                        this.log(`Error: ${message.message}`, 'error');
+                        this.showToast(message.message, 'error');
+                        break;
+
+                    case 'heartbeat':
+                        // Just to keep connection alive
+                        break;
+
+                    default:
+                        this.log(`Unknown message type: ${type}`, 'warning');
+                }
+            }
+
+            updateDashboardData(data) {
+                // Update statistics
+                const stats = data.statistics || {};
+                document.getElementById('totalCallsStat').textContent = stats.total_calls || 0;
+                document.getElementById('activeCallsStat').textContent = stats.in_progress_calls || 0;
+                document.getElementById('completedCallsStat').textContent = stats.completed_calls || 0;
+                document.getElementById('failedCallsStat').textContent = stats.failed_calls || 0;
+
+                // Update active calls
+                this.updateActiveCallsDisplay(data.active_calls || []);
+            }
+
+            handleFileProcessed(data) {
+                this.customers = data.customers || [];
+                this.updateCustomerTable();
+                this.updateUploadStatus(
+                    `✅ Processed ${data.processed_records} customers`, 
+                    'success'
+                );
+                
+                // Enable bulk call buttons
+                document.getElementById('callAllButton').disabled = this.customers.length === 0;
+            }
+
+            handleCallTriggered(data) {
+                if (data.success) {
+                    this.log(`Call triggered: ${data.call_sid}`, 'success');
+                    this.showToast('Call triggered successfully!', 'success');
+                    
+                    // Add to active calls
+                    this.activeCalls.set(data.call_sid, {
+                        call_sid: data.call_sid,
+                        customer: data.customer,
+                        status: data.status,
+                        timestamp: new Date().toISOString()
+                    });
+                    
+                    this.updateActiveCallsDisplay();
+                } else {
+                    this.log(`Call failed: ${data.error}`, 'error');
+                    this.showToast('Call failed!', 'error');
+                }
+            }
+
+            handleStatusUpdate(message) {
+                const { call_sid, status, message: statusMessage } = message;
+                
+                this.log(`Call ${call_sid}: ${status} - ${statusMessage}`, 'info');
+                
+                // Update active calls
+                if (this.activeCalls.has(call_sid)) {
+                    const callData = this.activeCalls.get(call_sid);
+                    callData.status = status;
+                    callData.last_update = new Date().toISOString();
+                    
+                    // Remove from active calls if completed/failed
+                    if (['completed', 'failed', 'disconnected'].includes(status)) {
+                        this.activeCalls.delete(call_sid);
+                    }
+                    
+                    this.updateActiveCallsDisplay();
+                }
+            }
+
+            triggerSingleCall() {
+                const phoneNumber = document.getElementById('singleCallNumber').value.trim();
+                if (!phoneNumber) {
+                    this.showToast('Please enter a phone number', 'warning');
+                    return;
+                }
+
+                // Find customer by phone number
+                const customer = this.customers.find(c => c.phone_number === phoneNumber);
+                if (!customer) {
+                    this.showToast('Customer not found', 'warning');
+                    return;
+                }
+
+                this.sendWebSocketMessage({
+                    action: 'trigger_single_call',
+                    customer_id: customer.id
+                });
+
+                this.log(`Triggering call to ${phoneNumber}`, 'info');
+            }
+
+            triggerBulkCalls() {
+                if (this.customers.length === 0) {
+                    this.showToast('No customers to call', 'warning');
+                    return;
+                }
+
+                const customerIds = this.customers.map(c => c.id);
+                
+                this.sendWebSocketMessage({
+                    action: 'trigger_bulk_calls',
+                    customer_ids: customerIds
+                });
+
+                this.log(`Triggering bulk calls for ${customerIds.length} customers`, 'info');
+                document.getElementById('callAllButton').disabled = true;
+            }
+
+            triggerSelectedCalls() {
+                const checkboxes = document.querySelectorAll('input[name="customerSelect"]:checked');
+                const selectedIds = Array.from(checkboxes).map(cb => cb.value);
+
+                if (selectedIds.length === 0) {
+                    this.showToast('No customers selected', 'warning');
+                    return;
+                }
+
+                this.sendWebSocketMessage({
+                    action: 'trigger_bulk_calls',
+                    customer_ids: selectedIds
+                });
+
+                this.log(`Triggering calls for ${selectedIds.length} selected customers`, 'info');
+            }
+
+            transferToAgent(callSid) {
+                this.sendWebSocketMessage({
+                    action: 'transfer_to_agent',
+                    call_sid: callSid
+                });
+
+                this.log(`Requesting agent transfer for call ${callSid}`, 'info');
+            }
+
+            updateCustomerTable() {
+                const tbody = document.getElementById('customerTableBody');
+                tbody.innerHTML = '';
+
+                this.customers.forEach(customer => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td><input type="checkbox" name="customerSelect" value="${customer.id}"></td>
+                        <td>${customer.name}</td>
+                        <td>${customer.phone_number}</td>
+                        <td>${customer.loan_id}</td>
+                        <td>₹${customer.amount}</td>
+                        <td>${customer.due_date}</td>
+                        <td>${customer.state}</td>
+                        <td><span class="status-badge status-initiated">Ready</span></td>
+                        <td>
+                            <button class="call-button" onclick="dashboard.triggerSingleCallById('${customer.id}')">
+                                📞 Call
+                            </button>
+                        </td>
+                    `;
+                    tbody.appendChild(row);
+                });
+
+                // Update buttons
+                document.getElementById('callSelectedButton').disabled = false;
+            }
+
+            updateActiveCallsDisplay() {
+                const container = document.getElementById('callStatusContainer');
+                
+                if (this.activeCalls.size === 0) {
+                    container.innerHTML = '<p>No active calls</p>';
+                    return;
+                }
+
+                let html = '';
+                this.activeCalls.forEach((callData, callSid) => {
+                    html += `
+                        <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 8px;">
+                            <strong>Call: ${callSid}</strong><br>
+                            <strong>Customer:</strong> ${callData.customer.name} (${callData.customer.phone_number})<br>
+                            <strong>Status:</strong> <span class="status-badge status-${callData.status}">${callData.status}</span><br>
+                            <strong>Time:</strong> ${new Date(callData.timestamp).toLocaleTimeString()}<br>
+                            ${callData.status === 'in_progress' ? 
+                                `<button class="transfer-button" onclick="dashboard.transferToAgent('${callSid}')">Transfer to Agent</button>` : 
+                                ''
+                            }
+                        </div>
+                    `;
+                });
+                
+                container.innerHTML = html;
+            }
+
+            triggerSingleCallById(customerId) {
+                this.sendWebSocketMessage({
+                    action: 'trigger_single_call',
+                    customer_id: customerId
+                });
+            }
+
+            toggleAllSelection(checked) {
+                const checkboxes = document.querySelectorAll('input[name="customerSelect"]');
+                checkboxes.forEach(cb => cb.checked = checked);
+            }
+
+            sendWebSocketMessage(message) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify(message));
+                } else {
+                    this.showToast('WebSocket not connected', 'error');
+                }
+            }
+
+            updateConnectionStatus(connected) {
+                const statusEl = document.getElementById('connectionStatus');
+                if (connected) {
+                    statusEl.textContent = '🟢 Connected';
+                    statusEl.className = 'connection-status connection-connected';
+                } else {
+                    statusEl.textContent = '🔴 Disconnected';
+                    statusEl.className = 'connection-status connection-disconnected';
+                }
+            }
+
+            scheduleReconnect() {
+                if (this.reconnectAttempts < this.maxReconnectAttempts) {
+                    this.reconnectAttempts++;
+                    this.log(`Reconnecting in ${this.reconnectDelay/1000} seconds... (Attempt ${this.reconnectAttempts})`, 'warning');
+                    
+                    setTimeout(() => {
+                        this.connectWebSocket();
+                    }, this.reconnectDelay);
+                } else {
+                    this.log('Max reconnection attempts reached', 'error');
+                }
+            }
+
+            updateUploadStatus(message, type) {
+                const statusEl = document.getElementById('uploadStatus');
+                statusEl.textContent = message;
+                statusEl.className = `log-entry log-${type}`;
+            }
+
+            log(message, type = 'info') {
+                const logsContainer = document.getElementById('systemLogs');
+                const timestamp = new Date().toLocaleTimeString();
+                
+                const logEntry = document.createElement('div');
+                logEntry.className = 'log-entry';
+                logEntry.innerHTML = `
+                    <span class="log-timestamp">[${timestamp}]</span>
+                    <span class="log-${type}">${message}</span>
+                `;
+                
+                logsContainer.appendChild(logEntry);
+                logsContainer.scrollTop = logsContainer.scrollHeight;
+                
+                // Keep only last 100 logs
+                while (logsContainer.children.length > 100) {
+                    logsContainer.removeChild(logsContainer.firstChild);
+                }
+            }
+
+            showToast(message, type = 'info') {
+                const toast = document.createElement('div');
+                toast.className = `toast ${type}`;
+                toast.textContent = message;
+                
+                document.body.appendChild(toast);
+                
+                // Show toast
+                setTimeout(() => toast.classList.add('show'), 100);
+                
+                // Hide and remove toast
+                setTimeout(() => {
+                    toast.classList.remove('show');
+                    setTimeout(() => document.body.removeChild(toast), 300);
+                }, 3000);
+            }
+        }
+
+        // Initialize dashboard when DOM is loaded
+        let dashboard;
+        document.addEventListener('DOMContentLoaded', () => {
+            dashboard = new VoiceAssistantDashboard();
+        });
+    </script>
+</body>
+</html>

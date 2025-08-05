@@ -1,7 +1,9 @@
-from fastapi import FastAPI, WebSocket, Request, UploadFile, File, Body
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, WebSocket, Request, UploadFile, File, Body, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates # <-- NEW IMPORT
+from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import xml.etree.ElementTree as ET
 import json
 import base64
@@ -13,20 +15,130 @@ from requests.auth import HTTPBasicAuth
 from pydantic import BaseModel
 import pandas as pd
 import string
+import uuid
+from datetime import datetime
+from starlette.websockets import WebSocketDisconnect
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
+
+# Import our new services and utilities
+from database.schemas import init_database, db_manager, CallStatus
+from utils.redis_session import init_redis, redis_manager, generate_websocket_session_id
+from services.call_management import call_service
 import utils.connect_agent as agent
 import utils.bedrock_client as bedrock_client
+from utils.handler_asr import SarvamHandler
+import utils.voice_assistant_local
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("🚀 Starting Voice Assistant Application...")
+    
+    # Initialize database
+    if init_database():
+        print("✅ Database initialized successfully")
+    else:
+        print("❌ Database initialization failed")
+    
+    # Initialize Redis
+    if init_redis():
+        print("✅ Redis initialized successfully")
+    else:
+        print("❌ Redis initialization failed - running without session management")
+    
+    print("🎉 Application startup complete!")
+    
+    yield
+    
+    # Shutdown
+    print("🛑 Shutting down Voice Assistant Application...")
+
+app = FastAPI(
+    title="Voice Assistant Call Management System",
+    lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Mount the static directory to serve static files (like CSS, JS, images, and your index.html)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Configure Jinja2Templates to serve HTML files from the 'static' directory
-# This assumes your index.html is directly inside the 'static' folder
 templates = Jinja2Templates(directory="static")
 
-# Global variable to store customer data
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict = {}  # websocket_id -> websocket
+        self.connection_info: dict = {}     # websocket_id -> connection info
+    
+    async def connect(self, websocket: WebSocket, client_ip: str = None):
+        await websocket.accept()
+        websocket_id = generate_websocket_session_id()
+        
+        self.active_connections[websocket_id] = websocket
+        
+        # Create Redis session
+        client_info = {
+            'ip': client_ip,
+            'user_agent': websocket.headers.get('user-agent', ''),
+            'connected_at': datetime.utcnow().isoformat()
+        }
+        
+        redis_manager.create_websocket_session(websocket_id, client_info)
+        
+        self.connection_info[websocket_id] = {
+            'websocket_id': websocket_id,
+            'client_info': client_info
+        }
+        
+        return websocket_id
+    
+    def disconnect(self, websocket_id: str):
+        if websocket_id in self.active_connections:
+            del self.active_connections[websocket_id]
+        
+        if websocket_id in self.connection_info:
+            del self.connection_info[websocket_id]
+        
+        # Clean up Redis session
+        redis_manager.remove_websocket_session(websocket_id)
+    
+    async def send_message(self, websocket_id: str, message: dict):
+        if websocket_id in self.active_connections:
+            websocket = self.active_connections[websocket_id]
+            try:
+                await websocket.send_text(json.dumps(message))
+                return True
+            except Exception as e:
+                print(f"❌ Error sending message to {websocket_id}: {e}")
+                self.disconnect(websocket_id)
+                return False
+        return False
+    
+    async def broadcast_to_all(self, message: dict):
+        for websocket_id in list(self.active_connections.keys()):
+            await self.send_message(websocket_id, message)
+    
+    def get_websocket_id_by_connection(self, websocket: WebSocket) -> str:
+        for ws_id, ws in self.active_connections.items():
+            if ws == websocket:
+                return ws_id
+        return None
+
+manager = ConnectionManager()
+
+# Global variable to store customer data (keeping for backward compatibility)
 customer_data = []
 
 # State to Language Mapping (moved up before it's used)
@@ -101,9 +213,410 @@ def process_uploaded_customers(customers_list):
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard(request: Request):
     """
-    Serves the dashboard HTML file at the root URL.
+    Serves the enhanced dashboard HTML file at the root URL.
+    """
+    return templates.TemplateResponse("enhanced_dashboard.html", {"request": request})
+
+@app.get("/original", response_class=HTMLResponse)
+async def get_original_dashboard(request: Request):
+    """
+    Serves the original dashboard HTML file for backward compatibility.
     """
     return templates.TemplateResponse("index.html", {"request": request})
+
+# --- NEW: Enhanced API Endpoints ---
+
+@app.post("/api/upload-customers")
+async def upload_customers_enhanced(file: UploadFile = File(...), websocket_id: str = None):
+    """Enhanced customer file upload with database storage and session management"""
+    try:
+        # Validate file type
+        if not file.filename.endswith(('.csv', '.xlsx', '.xls')):
+            raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
+        
+        # Read file content
+        file_content = await file.read()
+        
+        # Process file using call management service
+        result = await call_service.upload_and_process_customers(
+            file_content, 
+            file.filename, 
+            websocket_id
+        )
+        
+        if result['success']:
+            return JSONResponse(content={
+                "success": True,
+                "message": f"Successfully processed {result['processed_records']} customers",
+                "upload_id": result['upload_id'],
+                "total_records": result['total_records'],
+                "processed_records": result['processed_records'],
+                "failed_records": result['failed_records'],
+                "customers": result['customers']
+            })
+        else:
+            raise HTTPException(status_code=400, detail=result['error'])
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/trigger-call")
+async def trigger_single_call_enhanced(
+    customer_id: str = Body(..., embed=True),
+    websocket_id: str = Body(None, embed=True)
+):
+    """Enhanced single call trigger with session management"""
+    try:
+        result = await call_service.trigger_single_call(customer_id, websocket_id)
+        
+        if result['success']:
+            return JSONResponse(content={
+                "success": True,
+                "message": "Call triggered successfully",
+                "call_sid": result['call_sid'],
+                "customer": result['customer'],
+                "status": result['status']
+            })
+        else:
+            raise HTTPException(status_code=400, detail=result['error'])
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/trigger-bulk-calls")
+async def trigger_bulk_calls_enhanced(
+    request_data: dict = Body(...)
+):
+    """Enhanced bulk call trigger with parallel processing"""
+    try:
+        websocket_id = request_data.get('websocket_id')
+        customer_ids = request_data.get('customer_ids', [])
+        customer_data_list = request_data.get('customer_data', [])
+        
+        print(f"🔄 Bulk call request received:")
+        print(f"   WebSocket ID: {websocket_id}")
+        print(f"   Customer IDs: {len(customer_ids)} provided")
+        print(f"   Customer Data: {len(customer_data_list)} provided")
+        
+        # If no customer_ids provided, try to get all customers from database
+        if not customer_ids and not customer_data_list:
+            session = db_manager.get_session()
+            try:
+                from database.schemas import Customer
+                customers = session.query(Customer).all()
+                customer_ids = [str(customer.id) for customer in customers]
+                print(f"📊 Found {len(customer_ids)} customers in database")
+            finally:
+                db_manager.close_session(session)
+        
+        # Use the call service to trigger bulk calls
+        if customer_ids:
+            print(f"🔄 Triggering calls for {len(customer_ids)} existing customers")
+            result = await call_service.trigger_bulk_calls(customer_ids, websocket_id)
+        elif customer_data_list:
+            print(f"🔄 Triggering calls for {len(customer_data_list)} customers from data")
+            result = await call_service.trigger_bulk_calls_from_data(customer_data_list, websocket_id)
+        else:
+            return JSONResponse(
+                status_code=422,
+                content={"success": False, "error": "No customer IDs or customer data provided"}
+            )
+        
+        return JSONResponse(content={
+            "success": True,
+            "message": f"Bulk calls initiated: {result['successful_calls']} successful, {result['failed_calls']} failed",
+            "total_calls": result['total_calls'],
+            "successful_calls": result['successful_calls'],
+            "failed_calls": result['failed_calls'],
+            "results": result['results']
+        })
+        
+    except Exception as e:
+        print(f"❌ Bulk calls error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/transfer-to-agent")
+async def transfer_to_agent_enhanced(call_sid: str = Body(..., embed=True)):
+    """Enhanced agent transfer with session tracking"""
+    try:
+        result = await call_service.transfer_to_agent(call_sid)
+        
+        if result['success']:
+            return JSONResponse(content={
+                "success": True,
+                "message": result['message']
+            })
+        else:
+            raise HTTPException(status_code=400, detail=result['error'])
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/call-status/{call_sid}")
+async def get_call_status(call_sid: str):
+    """Get detailed call status and history"""
+    try:
+        # Get from Redis (real-time data)
+        redis_data = redis_manager.get_call_session(call_sid)
+        
+        # Get from Database (persistent data)
+        session = db_manager.get_session()
+        try:
+            from database.schemas import get_call_session_by_sid
+            db_data = get_call_session_by_sid(session, call_sid)
+            
+            response = {
+                "call_sid": call_sid,
+                "redis_data": redis_data,
+                "database_data": {
+                    "status": db_data.status if db_data else None,
+                    "start_time": db_data.start_time.isoformat() if db_data and db_data.start_time else None,
+                    "end_time": db_data.end_time.isoformat() if db_data and db_data.end_time else None,
+                    "duration": db_data.duration if db_data else None,
+                    "customer_name": db_data.customer.name if db_data and db_data.customer else None
+                } if db_data else None
+            }
+            
+            return JSONResponse(content=response)
+            
+        finally:
+            db_manager.close_session(session)
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/dashboard-data")
+async def get_dashboard_data(websocket_id: str = None):
+    """Get comprehensive dashboard data"""
+    try:
+        dashboard_data = call_service.get_call_status_dashboard(websocket_id)
+        
+        # Add Redis statistics
+        redis_stats = redis_manager.get_active_sessions_count()
+        dashboard_data['redis_statistics'] = redis_stats
+        
+        return JSONResponse(content=dashboard_data)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- NEW: Exotel Pass-Through URL Endpoint ---
+@app.get("/passthru-handler")
+@app.post("/passthru-handler")
+async def exotel_passthru_handler(request: Request):
+    """
+    Exotel Pass-Through URL Handler
+    Receives customer information and call parameters from Exotel
+    Maintains session isolation and provides customer context during calls
+    """
+    try:
+        # Get query parameters and form data
+        query_params = dict(request.query_params)
+        
+        # Try to get form data if POST request
+        form_data = {}
+        if request.method == "POST":
+            try:
+                form_data = dict(await request.form())
+            except:
+                pass
+        
+        # Combine all parameters
+        call_params = {**query_params, **form_data}
+        
+        # Extract Exotel call information
+        call_sid = call_params.get('CallSid', call_params.get('call_sid'))
+        from_number = call_params.get('From', call_params.get('from'))
+        to_number = call_params.get('To', call_params.get('to'))
+        call_status = call_params.get('CallStatus', call_params.get('status', 'initiated'))
+        
+        # Extract custom customer data from URL parameters
+        customer_id = call_params.get('customer_id')
+        customer_name = call_params.get('customer_name', 'Unknown')
+        loan_id = call_params.get('loan_id')
+        amount = call_params.get('amount')
+        due_date = call_params.get('due_date')
+        language_code = call_params.get('language_code', 'hi-IN')
+        state = call_params.get('state')
+        
+        # Create session data with customer information
+        session_data = {
+            'call_sid': call_sid,
+            'from_number': from_number,
+            'to_number': to_number,
+            'call_status': call_status,
+            'customer_info': {
+                'customer_id': customer_id,
+                'name': customer_name,
+                'phone_number': from_number,
+                'loan_id': loan_id,
+                'amount': amount,
+                'due_date': due_date,
+                'language_code': language_code,
+                'state': state
+            },
+            'call_start_time': datetime.utcnow().isoformat(),
+            'session_created_at': datetime.utcnow().isoformat()
+        }
+        
+        # Store session in Redis for quick access during call
+        if call_sid:
+            redis_manager.create_call_session(call_sid, session_data)
+            
+            # Update call status in database if exists
+            session = db_manager.get_session()
+            try:
+                from database.schemas import update_call_status
+                update_call_status(session, call_sid, call_status, 
+                                 f"Pass-through handler called with customer: {customer_name}", 
+                                 {'passthru_params': call_params})
+            except Exception as db_error:
+                print(f"Database update error: {db_error}")
+            finally:
+                db_manager.close_session(session)
+        
+        # Log the pass-through call
+        print(f"🔄 Pass-Through Handler: Call {call_sid} for customer {customer_name} ({from_number})")
+        print(f"   Customer ID: {customer_id}, Loan: {loan_id}, Amount: ₹{amount}")
+        print(f"   Language: {language_code}, State: {state}")
+        
+        # Return ExoML response to continue the call flow
+        exoml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="female" language="{language_code}">
+        नमस्ते {customer_name}, मैं प्रिया हूं और ज़्रोसिस बैंक की ओर से बात कर रही हूं। 
+        आपके लोन खाता {loan_id} के बारे में है जिसमें {amount} रुपये की बकाया राशि है।
+    </Say>
+    <Gather timeout="10" finishOnKey="#" action="/gather-response?call_sid={call_sid}&amp;customer_id={customer_id}">
+        <Say voice="female" language="{language_code}">
+            कृपया अपना जवाब दें। यदि आप एजेंट से बात करना चाहते हैं तो 1 दबाएं।
+        </Say>
+    </Gather>
+    <Say voice="female" language="{language_code}">
+        धन्यवाद। आपका कॉल समाप्त हो रहा है।
+    </Say>
+</Response>"""
+
+        return HTMLResponse(content=exoml_response, media_type="application/xml")
+        
+    except Exception as e:
+        print(f"❌ Pass-through handler error: {e}")
+        
+        # Return error ExoML response
+        error_response = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="female" language="hi-IN">
+        क्षमा करें, तकनीकी समस्या के कारण यह कॉल समाप्त हो रहा है।
+    </Say>
+    <Hangup/>
+</Response>"""
+        
+        return HTMLResponse(content=error_response, media_type="application/xml")
+
+@app.get("/gather-response")
+@app.post("/gather-response")
+async def handle_gather_response(request: Request):
+    """Handle customer response from Exotel Gather"""
+    try:
+        query_params = dict(request.query_params)
+        form_data = {}
+        if request.method == "POST":
+            try:
+                form_data = dict(await request.form())
+            except:
+                pass
+        
+        params = {**query_params, **form_data}
+        
+        call_sid = params.get('call_sid')
+        customer_id = params.get('customer_id')
+        digits = params.get('Digits', '')
+        
+        # Get customer session data
+        session_data = redis_manager.get_call_session(call_sid) if call_sid else None
+        customer_name = session_data.get('customer_info', {}).get('name', 'Unknown') if session_data else 'Unknown'
+        language_code = session_data.get('customer_info', {}).get('language_code', 'hi-IN') if session_data else 'hi-IN'
+        
+        print(f"🎯 Customer response: {digits} for call {call_sid}")
+        
+        if digits == "1":
+            # Transfer to agent
+            agent_number = os.getenv("AGENT_PHONE_NUMBER", "07417119014")
+            
+            exoml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="female" language="{language_code}">
+        आपको एजेंट से जोड़ा जा रहा है। कृपया प्रतीक्षा करें।
+    </Say>
+    <Dial timeout="30" callerId="{os.getenv('EXOTEL_VIRTUAL_NUMBER', '04446972509')}">
+        <Number>{agent_number}</Number>
+    </Dial>
+    <Say voice="female" language="{language_code}">
+        एजेंट उपलब्ध नहीं है। कृपया बाद में कॉल करें।
+    </Say>
+</Response>"""
+        else:
+            # Continue with automated flow
+            exoml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="female" language="{language_code}">
+        धन्यवाद {customer_name}। आपकी जानकारी नोट कर ली गई है। 
+        भुगतान लिंक SMS से भेजा जाएगा।
+    </Say>
+    <Hangup/>
+</Response>"""
+        
+        # Update session with response
+        if call_sid:
+            redis_manager.update_call_session(call_sid, {
+                'customer_response': digits,
+                'response_time': datetime.utcnow().isoformat()
+            })
+        
+        return HTMLResponse(content=exoml_response, media_type="application/xml")
+        
+    except Exception as e:
+        print(f"❌ Gather response error: {e}")
+        
+        error_response = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="female" language="hi-IN">क्षमा करें, कॉल समाप्त हो रहा है।</Say>
+    <Hangup/>
+</Response>"""
+        
+        return HTMLResponse(content=error_response, media_type="application/xml")
+
+@app.post("/api/exotel-webhook")
+async def exotel_webhook_enhanced(request: Request):
+    """Enhanced Exotel webhook handler with comprehensive status tracking"""
+    try:
+        # Parse webhook data
+        form_data = await request.form()
+        webhook_data = dict(form_data)
+        
+        print(f"📞 Exotel Webhook Received: {webhook_data}")
+        
+        # Process webhook using call management service
+        result = await call_service.handle_exotel_webhook(webhook_data)
+        
+        if result['success']:
+            return JSONResponse(content={
+                "success": True,
+                "message": "Webhook processed successfully",
+                "status": result['status']
+            })
+        else:
+            print(f"❌ Webhook processing failed: {result['error']}")
+            return JSONResponse(content={
+                "success": False,
+                "error": result['error']
+            })
+            
+    except Exception as e:
+        print(f"❌ Webhook error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 class ExotelWebhookPayload(BaseModel):
     CallSid: str
@@ -895,79 +1408,247 @@ async def trigger_bulk_calls(customers: list = Body(...)):
             results.append(result)
     return {"results": results}
 
-# --- WebSocket Endpoint for Dashboard Communication ---
+# --- Enhanced WebSocket Endpoint for Real-time Session Management ---
 @app.websocket("/ws")
-async def websocket_trigger_call(websocket: WebSocket):
+async def websocket_enhanced_session_manager(websocket: WebSocket):
     """
-    WebSocket endpoint for the dashboard to trigger outbound Exotel calls and share customer data.
-    Expects JSON messages like: `{"action": "trigger-call", "customer_number": "+91XXXXXXXXXX"}`
+    Enhanced WebSocket endpoint with Redis session management, call tracking, and real-time status updates
     """
-    await websocket.accept()
-    print("[WebSocket /ws] Dashboard client connected. Waiting for call trigger messages ---.")
+    websocket_id = None
     
-    # Send customer data to the frontend
     try:
-        await websocket.send_json({
-            "action": "customer_data",
-            "data": customer_data
+        # Connect and create session
+        client_ip = websocket.client.host if websocket.client else "unknown"
+        websocket_id = await manager.connect(websocket, client_ip)
+        
+        print(f"🔌 WebSocket connected: {websocket_id}")
+        
+        # Send initial connection confirmation
+        await manager.send_message(websocket_id, {
+            "type": "connection_established",
+            "websocket_id": websocket_id,
+            "message": "Connected to Voice Assistant Call Management System",
+            "timestamp": datetime.utcnow().isoformat()
         })
-        print(f"[WebSocket /ws] Sent {len(customer_data)} customers to dashboard")
-    except Exception as e:
-        print(f"[WebSocket /ws] Error sending customer data: {e}")
-        # Send empty data if there's an error
+        
+        # Send current dashboard data
         try:
-            await websocket.send_json({
-                "action": "customer_data",
-                "data": []
+            dashboard_data = call_service.get_call_status_dashboard(websocket_id)
+            await manager.send_message(websocket_id, {
+                "type": "dashboard_data",
+                "data": dashboard_data,
+                "timestamp": datetime.utcnow().isoformat()
             })
-        except:
-            pass
-    
-    try:
+        except Exception as e:
+            print(f"❌ Error sending initial dashboard data: {e}")
+        
+        # Main message loop
         while True:
-            data = await websocket.receive_text()
             try:
-                message = json.loads(data)
-                action = message.get("action")
-                customer_number = message.get("customer_number")
-
-                if action == "trigger-call" and customer_number:
-                    print(f"📞 Triggering Exotel call to {customer_number} from dashboard...")
-                    try:
-                        # Find customer data for this number
-                        customer_info = get_customer_by_phone(customer_number)
-                        if customer_info:
-                            print(f"[Call] Using customer data: {customer_info['name']} - {customer_info['lang']}")
-                        else:
-                            print(f"[Call] No customer data found for {customer_number}, using fallback")
-                            customer_info = {
-                                "name": "Customer",
-                                "loan_id": "XXXX",
-                                "amount": "XXXX",
-                                "due_date": "XXXX",
-                                "lang": "en-IN"
-                            }
-                        
-                        await trigger_exotel_call_async(customer_number)
-                        await websocket.send_text(f"📞 Call triggered to {customer_number} successfully.")
-                    except Exception as e:
-                        await websocket.send_text(f"❌ Error triggering call: {e}")
-                elif action == "get-customer-data":
-                    # Send current customer data if requested
-                    await websocket.send_json({
-                        "action": "customer_data",
-                        "data": customer_data
+                # Check for pending notifications from Redis
+                notifications = redis_manager.get_websocket_notifications(websocket_id)
+                for notification in notifications:
+                    await manager.send_message(websocket_id, notification)
+                
+                # Wait for message with timeout to periodically check notifications
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    # Send heartbeat
+                    await manager.send_message(websocket_id, {
+                        "type": "heartbeat",
+                        "timestamp": datetime.utcnow().isoformat()
                     })
-                else:
-                    await websocket.send_text(f"Received unknown or incomplete message: {data}. "
-                                             "Expected: {'action': 'trigger-call', 'customer_number': '+91XXXXXXXXXX'} or {'action': 'get-customer-data'}")
-            except json.JSONDecodeError:
-                await websocket.send_text(f"Received non-JSON message: {data}. Expected JSON for call trigger.")
+                    continue
+                except WebSocketDisconnect:
+                    # Client disconnected, break the loop
+                    print(f"🔌 WebSocket client disconnected: {websocket_id}")
+                    break
+                
+                try:
+                    message = json.loads(data)
+                    await handle_websocket_message(websocket_id, message)
+                    
+                except json.JSONDecodeError:
+                    await manager.send_message(websocket_id, {
+                        "type": "error",
+                        "message": "Invalid JSON format",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    
+            except WebSocketDisconnect:
+                # Client disconnected, break the loop
+                print(f"🔌 WebSocket client disconnected: {websocket_id}")
+                break
+            except Exception as e:
+                print(f"❌ Error in WebSocket message loop: {e}")
+                try:
+                    await manager.send_message(websocket_id, {
+                        "type": "error",
+                        "message": f"Server error: {str(e)}",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                except:
+                    # If we can't send the error message, the connection is likely dead
+                    print(f"❌ Failed to send error message, connection likely dead: {websocket_id}")
+                    break
                 
     except WebSocketDisconnect:
-        print("[WebSocket /ws] Dashboard client disconnected.")
+        print(f"🔌 WebSocket disconnected: {websocket_id}")
     except Exception as e:
-        print(f"[WebSocket /ws Error] ❌ {e}")
+        print(f"❌ WebSocket error: {e}")
+    finally:
+        if websocket_id:
+            manager.disconnect(websocket_id)
+
+async def handle_websocket_message(websocket_id: str, message: dict):
+    """Handle incoming WebSocket messages"""
+    action = message.get("action")
+    
+    try:
+        if action == "trigger_single_call":
+            customer_id = message.get("customer_id")
+            if not customer_id:
+                await manager.send_message(websocket_id, {
+                    "type": "error",
+                    "message": "customer_id is required for trigger_single_call",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                return
+            
+            # Trigger call using service
+            result = await call_service.trigger_single_call(customer_id, websocket_id)
+            
+            await manager.send_message(websocket_id, {
+                "type": "call_triggered",
+                "success": result['success'],
+                "data": result,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+        elif action == "trigger_bulk_calls":
+            customer_ids = message.get("customer_ids", [])
+            if not customer_ids:
+                await manager.send_message(websocket_id, {
+                    "type": "error",
+                    "message": "customer_ids array is required for trigger_bulk_calls",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                return
+            
+            # Trigger bulk calls
+            result = await call_service.trigger_bulk_calls(customer_ids, websocket_id)
+            
+            await manager.send_message(websocket_id, {
+                "type": "bulk_calls_triggered",
+                "success": True,
+                "data": result,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+        elif action == "transfer_to_agent":
+            call_sid = message.get("call_sid")
+            if not call_sid:
+                await manager.send_message(websocket_id, {
+                    "type": "error",
+                    "message": "call_sid is required for transfer_to_agent",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                return
+            
+            # Transfer to agent
+            result = await call_service.transfer_to_agent(call_sid)
+            
+            await manager.send_message(websocket_id, {
+                "type": "agent_transfer_result",
+                "success": result['success'],
+                "data": result,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+        elif action == "get_call_status":
+            call_sid = message.get("call_sid")
+            if not call_sid:
+                await manager.send_message(websocket_id, {
+                    "type": "error",
+                    "message": "call_sid is required for get_call_status",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                return
+            
+            # Get call status from Redis and Database
+            redis_data = redis_manager.get_call_session(call_sid)
+            
+            await manager.send_message(websocket_id, {
+                "type": "call_status",
+                "call_sid": call_sid,
+                "data": redis_data,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+        elif action == "get_dashboard_data":
+            # Get fresh dashboard data
+            dashboard_data = call_service.get_call_status_dashboard(websocket_id)
+            
+            await manager.send_message(websocket_id, {
+                "type": "dashboard_data",
+                "data": dashboard_data,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+        elif action == "get_customer_data":
+            # Send current customer data (backward compatibility)
+            await manager.send_message(websocket_id, {
+                "type": "customer_data",
+                "data": customer_data,
+                "count": len(customer_data),
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+        elif action == "trigger-call":  # Backward compatibility
+            customer_number = message.get("customer_number")
+            if not customer_number:
+                await manager.send_message(websocket_id, {
+                    "type": "error",
+                    "message": "customer_number is required for trigger-call",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                return
+            
+            # Find customer by phone and trigger call
+            customer_info = get_customer_by_phone(customer_number)
+            if customer_info:
+                # This is a simplified version for backward compatibility
+                await trigger_exotel_call_async(customer_number)
+                await manager.send_message(websocket_id, {
+                    "type": "call_triggered_legacy",
+                    "message": f"📞 Call triggered to {customer_number} successfully",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+            else:
+                await manager.send_message(websocket_id, {
+                    "type": "error",
+                    "message": f"Customer not found for number: {customer_number}",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                
+        else:
+            await manager.send_message(websocket_id, {
+                "type": "error",
+                "message": f"Unknown action: {action}",
+                "available_actions": [
+                    "trigger_single_call", "trigger_bulk_calls", "transfer_to_agent",
+                    "get_call_status", "get_dashboard_data", "get_customer_data"
+                ],
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+    except Exception as e:
+        await manager.send_message(websocket_id, {
+            "type": "error",
+            "message": f"Error processing action '{action}': {str(e)}",
+            "timestamp": datetime.utcnow().isoformat()
+        })
 
 @app.post("/upload-customers/")
 async def upload_customers(file: UploadFile = File(...)):
@@ -1093,3 +1774,25 @@ async def test_stream_websocket():
         "endpoint": "/stream",
         "customer_data_count": len(customer_data)
     }
+
+# Server startup section
+if __name__ == "__main__":
+    import uvicorn
+    
+    print("🚀 Voice Assistant Call Management System")
+    print("=" * 50)
+    print("🌐 Starting server on http://localhost:8000")
+    print("📊 Enhanced Dashboard (default): http://localhost:8000/")
+    print("📋 Original Dashboard: http://localhost:8000/original")
+    print("📁 Static Files: http://localhost:8000/static/")
+    print("🔧 API Documentation: http://localhost:8000/docs")
+    print("🔌 WebSocket endpoint: ws://localhost:8000/ws/{session_id}")
+    print("=" * 50)
+    
+    uvicorn.run(
+        "main:app",  # Use import string format to fix reload warning
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )
