@@ -27,7 +27,42 @@ load_dotenv()
 from database.schemas import init_database, db_manager, CallStatus
 from utils.redis_session import init_redis, redis_manager, generate_websocket_session_id
 from services.call_management import call_service
+from utils.handler_asr import SarvamHandler
 import utils.connect_agent as agent
+
+# Initialize Sarvam TTS handler for voice synthesis
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
+sarvam_handler = SarvamHandler(SARVAM_API_KEY) if SARVAM_API_KEY else None
+
+# Working greeting templates from file.py
+GREETING_TEMPLATE = {
+    "en-IN": "Hello, this is Priya calling on behalf of Zrosis Bank. Am I speaking with Mr. {name}?",
+    "hi-IN": "नमस्ते, मैं प्रिया हूं और ज़्रोसिस बैंक की ओर से बात कर रही हूं। क्या मैं श्री/सुश्री {name} से बात कर रही हूं?",
+    "ta-IN": "வணக்கம், நான் பிரியா. இது ஸ்ரோசிஸ் வங்கியிலிருந்து அழைப்பு. திரு/திருமதி {name} பேசுகிறீர்களா?",
+    "te-IN": "హలో, నేను ప్రియ మాట్లాడుతున్నాను, ఇది జ్రోసిస్ బ్యాంక్ నుండి కాల్. మిస్టర్/మిసెస్ {name} మాట్లాడుతున్నారా?",
+    "mr-IN": "नमस्कार, मी प्रिया बोलत आहे, झ्रोसिस बँकेकडून. मी श्री {name} शी बोलत आहे का?",
+    "kn-IN": "ನಮಸ್ಕಾರ, ನಾನು ಪ್ರಿಯಾ, ಝ್ರೋಸಿಸ್ ಬ್ಯಾಂಕ್‌ನಿಂದ ಕರೆ ಮಾಡುತ್ತಿದ್ದೇನೆ. ನಾನು ಶ್ರೀ {name} ಅವರೊಂದಿಗೆ ಮಾತನಾಡುತ್ತಿದ್ದೇನೆವಾ?",
+}
+
+# EMI details template for loan information
+EMI_DETAILS_TEMPLATE = {
+    "en-IN": "Thank you. I'm calling about your loan account {loan_id}, which has an outstanding EMI of ₹{amount} due on {due_date}. If this remains unpaid, it may affect your credit score.",
+    "hi-IN": "धन्यवाद। मैं आपके लोन खाता {loan_id} के बारे में कॉल कर रही हूँ, जिसकी बकाया ईएमआई ₹{amount} है, जो {due_date} को देय है। यदि यह भुगतान नहीं हुआ तो आपके क्रेडिट स्कोर पर प्रभाव पड़ सकता है।",
+    "ta-IN": "நன்றி. உங்கள் கடன் கணக்கு {loan_id} குறித்து அழைக்கிறேன், நिलुவை EMI ₹{amount} {due_date} அன்று செலুத்த வேண்டும். இது செலுத்தாவிட்டால் உங்கள் கிரெடிட் ஸ்கோருக்கு பாதிப்பு ஏற்படலாம்।",
+    "te-IN": "ధన్యవాదాలు. మీ లోన్ ఖాతా {loan_id} గురించి కాల్ చేస్తున్నాను, ₹{amount} EMI {due_date} నాటికి బాకీగా ఉంది। ఇది చెల్లించకపోతే మీ క్రెడిట్ స్కోర్‌పై ప్రభావం ఉంటుంది।",
+    "mr-IN": "धन्यवाद. मी तुमच्या कर्ज खाता {loan_id} विषयी कॉल करत आहे, ₹{amount} EMI {due_date} रोजी बाकी आहे। हे भरले नाही तर तुमच्या क्रेडिट स्कोरवर परिणाम होईल।",
+    "kn-IN": "ಧನ್ಯವಾದಗಳು. ನಿಮ್ಮ ಸಾಲ ಖಾತೆ {loan_id} ಬಗ್ಗೆ ಕರೆ ಮಾಡುತ್ತಿದ್ದೇನೆ, ₹{amount} EMI {due_date} ರಂದು ಬಾಕಿ ಇದೆ। ಇದನ್ನು ಪಾವತಿಸದಿದ್ದರೆ ನಿಮ್ಮ ಕ್ರೆಡಿಟ್ ಸ್ಕೋರ್‌ ಮೇಲೆ ಪರಿಣಾಮ ಬೀರುತ್ತದೆ।",
+}
+
+# Agent connect prompt
+AGENT_CONNECT_TEMPLATE = {
+    "en-IN": "Would you like to speak with a live agent for payment options? Please say yes or no.",
+    "hi-IN": "क्या आप भुगतान विकल्पों के लिए एजेंट से बात करना चाहेंगे? कृपया हां या नहीं कहें।",
+    "ta-IN": "கட்டண விருப்பங்களுக்கு நீங்கள் ஒரு முகவருடன் பேச விரும்புகிறீர்களா? தயவுसेய்து ஆம் அல்லது இல்লை என்று சொல்लுங்கள்।",
+    "te-IN": "చెల్లింపు ఎంపికల కోసం మీరు ఒక ఏజెంట్‌తో మాట్లాడాలనుకుంటున్నారా? దయచేసి అవును లేదా కాదు అని చెప్పండి।",
+    "mr-IN": "पेमेंट पर्यायांसाठी तुम्ही एजेंटशी बोलू इच्छिता का? कृपया होय किंवा नाही म्हणा।",
+    "kn-IN": "ಪಾವತಿ ಆಯ್ಕೆಗಳಿಗಾಗಿ ನೀವು ಏಜೆಂಟ್‌ನೊಂದಿಗೆ ಮಾತನಾಡಲು ಬಯಸುತ್ತೀರಾ? ದಯವಿಟ್ಟು ಹೌದು ಅಥವಾ ಇಲ್ಲ ಎಂದು ಹೇಳಿ।",
+}
 import utils.bedrock_client as bedrock_client
 from utils.handler_asr import SarvamHandler
 import utils.voice_assistant_local
@@ -402,6 +437,52 @@ async def get_dashboard_data(websocket_id: str = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Test endpoint for Exotel configuration
+@app.get("/test-exotel-config")
+async def test_exotel_config():
+    """Test endpoint to verify Exotel configuration"""
+    return {
+        "exotel_sid": os.getenv("EXOTEL_SID"),
+        "exotel_virtual_number": os.getenv("EXOTEL_VIRTUAL_NUMBER"),
+        "base_url": os.getenv("BASE_URL"),
+        "passthru_endpoint": f"{os.getenv('BASE_URL', 'http://localhost:8000')}/passthru-handler",
+        "webhook_endpoint": f"{os.getenv('BASE_URL', 'http://localhost:8000')}/api/exotel-webhook"
+    }
+
+# Test endpoint for pass-through ExoML response
+@app.get("/test-passthru-exoml")
+async def test_passthru_exoml():
+    """Test endpoint to verify ExoML response generation"""
+    # Sample test data
+    test_params = {
+        "customer_name": "Test Customer",
+        "loan_id": "LOAN123",
+        "amount": "15000",
+        "language_code": "hi-IN",
+        "call_sid": "test_call_123",
+        "customer_id": "test_customer"
+    }
+    
+    # Generate sample ExoML
+    greeting = f"नमस्ते {test_params['customer_name']}, मैं प्रिया हूं और ज़्रोसिस बैंक की ओर से बात कर रही हूं। आपके लोन खाता {test_params['loan_id']} के बारे में है जिसमें {test_params['amount']} रुपये की बकाया राशि है।"
+    
+    exoml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="female">
+        {greeting}
+    </Say>
+    <Gather timeout="10" finishOnKey="#" action="/gather-response?call_sid={test_params['call_sid']}&amp;customer_id={test_params['customer_id']}">
+        <Say voice="female">
+            कृपया अपना जवाब दें। यदि आप एजेंट से बात करना चाहते हैं तो 1 दबाएं।
+        </Say>
+    </Gather>
+    <Say voice="female">
+        धन्यवाद। आपका कॉल समाप्त हो रहा है।
+    </Say>
+</Response>"""
+    
+    return HTMLResponse(content=exoml_response, media_type="application/xml")
+
 # --- NEW: Exotel Pass-Through URL Endpoint ---
 @app.get("/passthru-handler")
 @app.post("/passthru-handler")
@@ -481,23 +562,52 @@ async def exotel_passthru_handler(request: Request):
         print(f"🔄 Pass-Through Handler: Call {call_sid} for customer {customer_name} ({from_number})")
         print(f"   Customer ID: {customer_id}, Loan: {loan_id}, Amount: ₹{amount}")
         print(f"   Language: {language_code}, State: {state}")
+        print(f"🎙️ Generating voice bot templates using working TTS logic...")
         
-        # Return ExoML response to continue the call flow
+        # Use the working template logic from file.py
+        # Determine language for template selection
+        template_lang = language_code if language_code in GREETING_TEMPLATE else "hi-IN"
+        
+        # Generate personalized greeting using working templates
+        greeting_text = GREETING_TEMPLATE.get(template_lang, GREETING_TEMPLATE["hi-IN"]).format(name=customer_name)
+        
+        # Generate EMI details using working templates  
+        emi_text = EMI_DETAILS_TEMPLATE.get(template_lang, EMI_DETAILS_TEMPLATE["hi-IN"]).format(
+            loan_id=loan_id, amount=amount, due_date=due_date
+        )
+        
+        # Generate agent connect prompt
+        agent_prompt = AGENT_CONNECT_TEMPLATE.get(template_lang, AGENT_CONNECT_TEMPLATE["hi-IN"])
+        
+        print(f"📝 Generated Templates:")
+        print(f"   Greeting: {greeting_text[:50]}...")
+        print(f"   EMI Info: {emi_text[:50]}...")
+        print(f"   Language: {template_lang}")
+        
+        # Return ExoML response with proper templates (Exotel will handle TTS)
         exoml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="female" language="{language_code}">
-        नमस्ते {customer_name}, मैं प्रिया हूं और ज़्रोसिस बैंक की ओर से बात कर रही हूं। 
-        आपके लोन खाता {loan_id} के बारे में है जिसमें {amount} रुपये की बकाया राशि है।
+    <Say voice="female">
+        {greeting_text}
     </Say>
-    <Gather timeout="10" finishOnKey="#" action="/gather-response?call_sid={call_sid}&amp;customer_id={customer_id}">
-        <Say voice="female" language="{language_code}">
-            कृपया अपना जवाब दें। यदि आप एजेंट से बात करना चाहते हैं तो 1 दबाएं।
+    <Pause length="1"/>
+    <Say voice="female">
+        {emi_text}
+    </Say>
+    <Gather timeout="10" finishOnKey="#" action="/gather-response?call_sid={call_sid}&amp;customer_id={customer_id}&amp;language={template_lang}">
+        <Say voice="female">
+            {agent_prompt}
         </Say>
     </Gather>
-    <Say voice="female" language="{language_code}">
+    <Say voice="female">
         धन्यवाद। आपका कॉल समाप्त हो रहा है।
     </Say>
 </Response>"""
+
+        print(f"📋 ExoML Response Generated:")
+        print(f"   Greeting: {greeting_text[:50]}...")
+        print(f"   Response Length: {len(exoml_response)} characters")
+        print(f"🚀 Returning ExoML to Exotel for TTS processing...")
 
         return HTMLResponse(content=exoml_response, media_type="application/xml")
         
@@ -537,23 +647,35 @@ async def handle_gather_response(request: Request):
         # Get customer session data
         session_data = redis_manager.get_call_session(call_sid) if call_sid else None
         customer_name = session_data.get('customer_info', {}).get('name', 'Unknown') if session_data else 'Unknown'
-        language_code = session_data.get('customer_info', {}).get('language_code', 'hi-IN') if session_data else 'hi-IN'
+        language_code = params.get('language', 'hi-IN')  # Get language from URL params
+        template_lang = language_code if language_code in GREETING_TEMPLATE else "hi-IN"
         
-        print(f"🎯 Customer response: {digits} for call {call_sid}")
+        print(f"🎯 Customer response: {digits} for call {call_sid} (Lang: {template_lang})")
         
         if digits == "1":
-            # Transfer to agent
+            # Transfer to agent using localized message
             agent_number = os.getenv("AGENT_PHONE_NUMBER", "07417119014")
+            
+            transfer_messages = {
+                "en-IN": f"Please wait {customer_name}, you are being connected to our agent.",
+                "hi-IN": f"कृपया प्रतीक्षा करें {customer_name}, आपको हमारे एजेंट से जोड़ा जा रहा है।",
+                "ta-IN": f"தயவுसेய்து காத்திருங்கள் {customer_name}, உங்களை எங்கள் முகவருடன் இணைக்கிறோம்।",
+                "te-IN": f"దయचేసి వేచి ఉండండి {customer_name}, మిమ్మల్ని మా ఏజెంట్‌తో కనెక్ట్ చేస్తున్నాము।",
+                "mr-IN": f"कृपया प्रतीक्षा करा {customer_name}, तुम्हाला आमच्या एजेंटशी जोडत आहोत।",
+                "kn-IN": f"ದಯವಿಟ್ಟು ಕಾಯಿರಿ {customer_name}, ನಿಮ್ಮನ್ನು ನಮ್ಮ ಏಜೆಂಟ್‌ಗೆ ಸಂಪರ್ಕಿಸುತ್ತಿದ್ದೇವೆ।"
+            }
+            
+            transfer_msg = transfer_messages.get(template_lang, transfer_messages["hi-IN"])
             
             exoml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="female" language="{language_code}">
-        आपको एजेंट से जोड़ा जा रहा है। कृपया प्रतीक्षा करें।
+    <Say voice="female">
+        {transfer_msg}
     </Say>
     <Dial timeout="30" callerId="{os.getenv('EXOTEL_VIRTUAL_NUMBER', '04446972509')}">
         <Number>{agent_number}</Number>
     </Dial>
-    <Say voice="female" language="{language_code}">
+    <Say voice="female">
         एजेंट उपलब्ध नहीं है। कृपया बाद में कॉल करें।
     </Say>
 </Response>"""
@@ -624,7 +746,7 @@ class ExotelWebhookPayload(BaseModel):
     To: str
     Direction: str
 
-CHUNK_SIZE = 800  # bytes for 20ms at 8000 Hz, 16-bit mono
+CHUNK_SIZE = 320  # bytes for 20ms at 8000 Hz, 16-bit mono
 
 from starlette.websockets import WebSocketDisconnect
 from utils.handler_asr import SarvamHandler
@@ -704,24 +826,11 @@ async def play_did_not_hear_response(websocket, lang: str = "en-IN"):
 
 async def greeting_template_play(websocket, customer_info, lang: str):
     """Plays the personalized greeting in the detected language."""
-    print(f"[Voicebot] greeting_template_play - Language: {lang}")
-    try:
-        greeting = GREETING_TEMPLATE.get(lang, GREETING_TEMPLATE["en-IN"]).format(name=customer_info['name'])
-        print(f"[Sarvam TTS] 🔁 Converting personalized greeting: {greeting}")
-        audio_bytes = await sarvam.synthesize_tts_end(greeting, lang)
-        print(f"[Sarvam TTS] ✅ Audio generated, size: {len(audio_bytes)} bytes")
-        await stream_audio_to_websocket(websocket, audio_bytes)
-        print(f"[Voicebot] ✅ Greeting sent successfully in {lang}")
-    except Exception as e:
-        print(f"[Voicebot] ❌ Error in greeting_template_play: {e}")
-        # Fallback to English
-        try:
-            fallback_greeting = GREETING_TEMPLATE["en-IN"].format(name=customer_info['name'])
-            audio_bytes = await sarvam.synthesize_tts_end(fallback_greeting, "en-IN")
-            await stream_audio_to_websocket(websocket, audio_bytes)
-            print("[Voicebot] ✅ Fallback greeting sent in English")
-        except Exception as fallback_e:
-            print(f"[Voicebot] ❌ Error in fallback greeting: {fallback_e}")
+    print("greeting_template_play")
+    greeting = GREETING_TEMPLATE.get(lang, GREETING_TEMPLATE["en-IN"]).format(name=customer_info['name'])
+    print(f"[Sarvam TTS] 🔁 Converting personalized greeting: {greeting}")
+    audio_bytes = await sarvam.synthesize_tts_end(greeting, lang)
+    await stream_audio_to_websocket(websocket, audio_bytes)
 
 # --- Multilingual Prompt Templates ---
 EMI_DETAILS_PART1_TEMPLATE = {
@@ -796,73 +905,30 @@ DID_NOT_HEAR_TEMPLATE = {
 
 async def play_emi_details_part1(websocket, customer_info, lang: str):
     """Plays the first part of EMI details."""
-    try:
-        prompt_text = EMI_DETAILS_PART1_TEMPLATE.get(
-            lang, EMI_DETAILS_PART1_TEMPLATE["en-IN"]
-        ).format(
-            loan_id=customer_info.get('loan_id', 'XXXX'),
-            amount=customer_info.get('amount', 'a certain amount'),
-            due_date=customer_info.get('due_date', 'a recent date')
-        )
-        print(f"[Sarvam TTS] 🔁 Converting EMI part 1: {prompt_text}")
-        audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
-        print(f"[Sarvam TTS] ✅ EMI part 1 audio generated, size: {len(audio_bytes)} bytes")
-        await stream_audio_to_websocket(websocket, audio_bytes)
-        print(f"[Voicebot] ✅ EMI part 1 sent successfully in {lang}")
-    except Exception as e:
-        print(f"[Voicebot] ❌ Error in play_emi_details_part1: {e}")
-        # Fallback to English
-        try:
-            fallback_text = EMI_DETAILS_PART1_TEMPLATE["en-IN"].format(
-                loan_id=customer_info.get('loan_id', 'XXXX'),
-                amount=customer_info.get('amount', 'a certain amount'),
-                due_date=customer_info.get('due_date', 'a recent date')
-            )
-            audio_bytes = await sarvam.synthesize_tts_end(fallback_text, "en-IN")
-            await stream_audio_to_websocket(websocket, audio_bytes)
-            print("[Voicebot] ✅ Fallback EMI part 1 sent in English")
-        except Exception as fallback_e:
-            print(f"[Voicebot] ❌ Error in fallback EMI part 1: {fallback_e}")
+    prompt_text = EMI_DETAILS_PART1_TEMPLATE.get(
+        lang, EMI_DETAILS_PART1_TEMPLATE["en-IN"]
+    ).format(
+        loan_id=customer_info.get('loan_id', 'XXXX'),
+        amount=customer_info.get('amount', 'a certain amount'),
+        due_date=customer_info.get('due_date', 'a recent date')
+    )
+    print(f"[Sarvam TTS] 🔁 Converting EMI part 1: {prompt_text}")
+    audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
+    await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def play_emi_details_part2(websocket, customer_info, lang: str):
     """Plays the second part of EMI details."""
-    try:
-        prompt_text = EMI_DETAILS_PART2_TEMPLATE.get(lang, EMI_DETAILS_PART2_TEMPLATE["en-IN"])
-        print(f"[Sarvam TTS] 🔁 Converting EMI part 2: {prompt_text}")
-        audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
-        print(f"[Sarvam TTS] ✅ EMI part 2 audio generated, size: {len(audio_bytes)} bytes")
-        await stream_audio_to_websocket(websocket, audio_bytes)
-        print(f"[Voicebot] ✅ EMI part 2 sent successfully in {lang}")
-    except Exception as e:
-        print(f"[Voicebot] ❌ Error in play_emi_details_part2: {e}")
-        # Fallback to English
-        try:
-            fallback_text = EMI_DETAILS_PART2_TEMPLATE["en-IN"]
-            audio_bytes = await sarvam.synthesize_tts_end(fallback_text, "en-IN")
-            await stream_audio_to_websocket(websocket, audio_bytes)
-            print("[Voicebot] ✅ Fallback EMI part 2 sent in English")
-        except Exception as fallback_e:
-            print(f"[Voicebot] ❌ Error in fallback EMI part 2: {fallback_e}")
+    prompt_text = EMI_DETAILS_PART2_TEMPLATE.get(lang, EMI_DETAILS_PART2_TEMPLATE["en-IN"])
+    print(f"[Sarvam TTS] 🔁 Converting EMI part 2: {prompt_text}")
+    audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
+    await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def play_agent_connect_question(websocket, lang: str):
     """Asks the user if they want to connect to a live agent."""
-    try:
-        prompt_text = AGENT_CONNECT_TEMPLATE.get(lang, AGENT_CONNECT_TEMPLATE["en-IN"])
-        print(f"[Sarvam TTS] 🔁 Converting agent connect question: {prompt_text}")
-        audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
-        print(f"[Sarvam TTS] ✅ Agent connect question audio generated, size: {len(audio_bytes)} bytes")
-        await stream_audio_to_websocket(websocket, audio_bytes)
-        print(f"[Voicebot] ✅ Agent connect question sent successfully in {lang}")
-    except Exception as e:
-        print(f"[Voicebot] ❌ Error in play_agent_connect_question: {e}")
-        # Fallback to English
-        try:
-            fallback_text = AGENT_CONNECT_TEMPLATE["en-IN"]
-            audio_bytes = await sarvam.synthesize_tts_end(fallback_text, "en-IN")
-            await stream_audio_to_websocket(websocket, audio_bytes)
-            print("[Voicebot] ✅ Fallback agent connect question sent in English")
-        except Exception as fallback_e:
-            print(f"[Voicebot] ❌ Error in fallback agent connect question: {fallback_e}")
+    prompt_text = AGENT_CONNECT_TEMPLATE.get(lang, AGENT_CONNECT_TEMPLATE["en-IN"])
+    print(f"[Sarvam TTS] 🔁 Converting agent connect question: {prompt_text}")
+    audio_bytes = await sarvam.synthesize_tts_end(prompt_text, lang)
+    await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def play_goodbye_after_decline(websocket, lang: str):
     """Plays a goodbye message if the user declines agent connection."""
@@ -929,9 +995,20 @@ async def record_audio_from_websocket(websocket) -> bytes:
 # --- Main WebSocket Endpoint (Voicebot Flow) ---
 
 @app.websocket("/stream")
-async def exotel_voicebot(websocket: WebSocket):
+async def exotel_voicebot(websocket: WebSocket, temp_call_id: str = None, call_sid: str = None, phone: str = None):
     await websocket.accept()
     print("[WebSocket] ✅ Connected to Exotel Voicebot Applet")
+    
+    # Try to get customer info from query parameters
+    query_params = dict(websocket.query_params) if hasattr(websocket, 'query_params') else {}
+    if not temp_call_id:
+        temp_call_id = query_params.get('temp_call_id')
+    if not call_sid:
+        call_sid = query_params.get('call_sid')
+    if not phone:
+        phone = query_params.get('phone')
+    
+    print(f"[WebSocket] Query params: temp_call_id={temp_call_id}, call_sid={call_sid}, phone={phone}")
     
     # State variable for the conversation stage
     conversation_stage = "INITIAL_GREETING" # States: INITIAL_GREETING, WAITING_FOR_LANG_DETECT, PLAYING_PERSONALIZED_GREETING, PLAYING_EMI_PART1, PLAYING_EMI_PART2, ASKING_AGENT_CONNECT, WAITING_AGENT_RESPONSE, TRANSFERRING_TO_AGENT, GOODBYE_DECLINE
@@ -952,14 +1029,90 @@ async def exotel_voicebot(websocket: WebSocket):
             if msg.get("event") == "start":
                 print("[WebSocket] 🔁 Got start event")
                 
-                # Try to get customer info from the call context
-                # In a real implementation, this would come from Exotel webhook
-                # For now, we'll use the first customer from uploaded data
+                # Try to get customer info from multiple sources
+                if not customer_info:
+                    # 1. Try to get from Redis using temp_call_id or call_sid
+                    if temp_call_id:
+                        print(f"[WebSocket] Looking up customer data by temp_call_id: {temp_call_id}")
+                        redis_data = redis_manager.get_call_session(temp_call_id)
+                        if redis_data:
+                            customer_info = {
+                                'name': redis_data.get('name', 'Customer'),
+                                'loan_id': redis_data.get('loan_id', 'XXXX'),
+                                'amount': redis_data.get('amount', 'XXXX'),
+                                'due_date': redis_data.get('due_date', 'XXXX'),
+                                'lang': redis_data.get('language_code', 'en-IN'),
+                                'phone': redis_data.get('phone_number', ''),
+                                'state': redis_data.get('state', '')
+                            }
+                            print(f"[WebSocket] ✅ Found customer data in Redis: {customer_info['name']}")
+                    
+                    elif call_sid:
+                        print(f"[WebSocket] Looking up customer data by call_sid: {call_sid}")
+                        redis_data = redis_manager.get_call_session(call_sid)
+                        if redis_data:
+                            customer_info = {
+                                'name': redis_data.get('name', 'Customer'),
+                                'loan_id': redis_data.get('loan_id', 'XXXX'),
+                                'amount': redis_data.get('amount', 'XXXX'),
+                                'due_date': redis_data.get('due_date', 'XXXX'),
+                                'lang': redis_data.get('language_code', 'en-IN'),
+                                'phone': redis_data.get('phone_number', ''),
+                                'state': redis_data.get('state', '')
+                            }
+                            print(f"[WebSocket] ✅ Found customer data in Redis: {customer_info['name']}")
+                    
+                    elif phone:
+                        print(f"[WebSocket] Looking up customer data by phone: {phone}")
+                        # Clean phone number for lookup
+                        clean_phone = phone.replace('+', '').replace('-', '').replace(' ', '')
+                        phone_key = f"customer_phone_{clean_phone}"
+                        redis_data = redis_manager.get_temp_data(phone_key)
+                        if redis_data:
+                            customer_info = {
+                                'name': redis_data.get('name', 'Customer'),
+                                'loan_id': redis_data.get('loan_id', 'XXXX'),
+                                'amount': redis_data.get('amount', 'XXXX'),
+                                'due_date': redis_data.get('due_date', 'XXXX'),
+                                'lang': redis_data.get('language_code', 'en-IN'),
+                                'phone': redis_data.get('phone_number', ''),
+                                'state': redis_data.get('state', '')
+                            }
+                            print(f"[WebSocket] ✅ Found customer data by phone in Redis: {customer_info['name']}")
+                
+                # 2. Try to parse CustomField data from Exotel start message (if available)
+                if not customer_info and 'customField' in msg:
+                    print("[WebSocket] Parsing CustomField from Exotel start message")
+                    try:
+                        custom_field = msg['customField']
+                        # Parse the CustomField format: "customer_id=|customer_name=Name|loan_id=LOAN123|..."
+                        parts = custom_field.split('|')
+                        custom_data = {}
+                        for part in parts:
+                            if '=' in part:
+                                key, value = part.split('=', 1)
+                                custom_data[key] = value
+                        
+                        customer_info = {
+                            'name': custom_data.get('customer_name', 'Customer'),
+                            'loan_id': custom_data.get('loan_id', 'XXXX'),
+                            'amount': custom_data.get('amount', 'XXXX'),
+                            'due_date': custom_data.get('due_date', 'XXXX'),
+                            'lang': custom_data.get('language_code', 'en-IN'),
+                            'phone': '',
+                            'state': custom_data.get('state', '')
+                        }
+                        print(f"[WebSocket] ✅ Parsed customer data from CustomField: {customer_info['name']}")
+                    except Exception as e:
+                        print(f"[WebSocket] ❌ Error parsing CustomField: {e}")
+                
+                # 3. Try to get from the global customer_data (fallback)
                 if not customer_info and customer_data:
                     customer_info = customer_data[0]  # Use first customer as default
-                    print(f"[Voicebot] Using customer: {customer_info['name']} - Language: {customer_info['lang']}")
-                elif not customer_info:
-                    # Create a fallback customer if no data is uploaded
+                    print(f"[WebSocket] Using first customer from uploaded data: {customer_info['name']} - Language: {customer_info['lang']}")
+                
+                # 4. Use fallback customer data if nothing else works
+                if not customer_info:
                     customer_info = {
                         "name": "Customer",
                         "loan_id": "XXXX",
@@ -967,25 +1120,25 @@ async def exotel_voicebot(websocket: WebSocket):
                         "due_date": "XXXX",
                         "lang": "en-IN"
                     }
-                    print("[Voicebot] Using fallback customer data - no CSV uploaded yet")
+                    print("[WebSocket] Using fallback customer data - no data source available")
                 
                 if conversation_stage == "INITIAL_GREETING":
-                    print(f"[Voicebot] 1. Sending initial greeting in {customer_info['lang']}.")
+                    print(f"[WebSocket] 1. Sending initial greeting to {customer_info['name']} in {customer_info['lang']}.")
                     try:
                         # Play initial greeting in state language from CSV
                         await greeting_template_play(websocket, customer_info, lang=customer_info['lang'])
-                        print(f"[Voicebot] ✅ Initial greeting sent successfully in {customer_info['lang']}")
+                        print(f"[WebSocket] ✅ Initial greeting sent successfully in {customer_info['lang']}")
                         initial_greeting_played = True
                     except Exception as e:
-                        print(f"[Voicebot] ❌ Error sending initial greeting: {e}")
+                        print(f"[WebSocket] ❌ Error sending initial greeting: {e}")
                         # Try to send a simple test message
                         try:
                             test_text = "Hello, this is a test message."
                             audio_bytes = await sarvam.synthesize_tts_end(test_text, "en-IN")
                             await stream_audio_to_websocket(websocket, audio_bytes)
-                            print("[Voicebot] ✅ Test message sent successfully")
+                            print("[WebSocket] ✅ Test message sent successfully")
                         except Exception as test_e:
-                            print(f"[Voicebot] ❌ Error sending test message: {test_e}")
+                            print(f"[WebSocket] ❌ Error sending test message: {test_e}")
                     conversation_stage = "WAITING_FOR_LANG_DETECT"
                 continue
 
@@ -1288,27 +1441,21 @@ async def play_transfer_to_agent(websocket, customer_number: str):
 
 
 async def stream_audio_to_websocket(websocket, audio_bytes):
-    print(f"[stream_audio_to_websocket] Streaming {len(audio_bytes)} bytes")
+    print("stream_audio_to_websocket")
     if not audio_bytes:
         print("[stream_audio_to_websocket] ❌ No audio bytes to stream.")
         return
-    try:
-        chunk_count = 0
-        for i in range(0, len(audio_bytes), CHUNK_SIZE):
-            chunk = audio_bytes[i:i + CHUNK_SIZE]
-            if not chunk:
-                continue
-            b64_chunk = base64.b64encode(chunk).decode("utf-8")
-            response_msg = {
-                "event": "media",
-                "media": {"payload": b64_chunk}
-            }
-            await websocket.send_json(response_msg)
-            chunk_count += 1
-            await asyncio.sleep(0.02) # Small delay to simulate real-time streaming
-        print(f"[stream_audio_to_websocket] ✅ Streamed {chunk_count} chunks successfully")
-    except Exception as e:
-        print(f"[stream_audio_to_websocket] ❌ Error streaming audio: {e}")
+    for i in range(0, len(audio_bytes), CHUNK_SIZE):
+        chunk = audio_bytes[i:i + CHUNK_SIZE]
+        if not chunk:
+            continue
+        b64_chunk = base64.b64encode(chunk).decode("utf-8")
+        response_msg = {
+            "event": "media",
+            "media": {"payload": b64_chunk}
+        }
+        await websocket.send_json(response_msg)
+        await asyncio.sleep(0.02) # Small delay to simulate real-time streaming
 
 # --- Outbound Call Trigger Function (used by dashboard) ---
 

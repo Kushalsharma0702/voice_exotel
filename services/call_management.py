@@ -149,7 +149,7 @@ class CallManagementService:
             # Generate temporary call ID (before Exotel assigns SID)
             temp_call_id = f"temp_call_{uuid.uuid4().hex[:12]}"
             
-            # Create Redis session
+            # Create Redis session with temp_call_id
             customer_data = {
                 'id': str(customer.id),
                 'name': customer.name,
@@ -161,7 +161,17 @@ class CallManagementService:
                 'language_code': customer.language_code
             }
             
+            # Store by temp_call_id
             self.redis_manager.create_call_session(temp_call_id, customer_data, websocket_id)
+            
+            # Also store by phone number for easy lookup by WebSocket
+            phone_key = f"customer_phone_{customer.phone_number.replace('+', '').replace('-', '').replace(' ', '')}"
+            self.redis_manager.store_temp_data(phone_key, customer_data, ttl=3600)
+            print(f"[CallService] Stored customer data in Redis: temp_call_id={temp_call_id}, phone_key={phone_key}")
+            
+            # Store temp_call_id mapping by phone for reverse lookup
+            temp_call_key = f"temp_call_phone_{customer.phone_number.replace('+', '').replace('-', '').replace(' ', '')}"
+            self.redis_manager.store_temp_data(temp_call_key, temp_call_id, ttl=3600)
             
             # Trigger Exotel call with customer data
             exotel_response = await self._trigger_exotel_call(customer.phone_number, temp_call_id, customer_data)
@@ -400,7 +410,7 @@ class CallManagementService:
             # Get statistics
             total_calls = session.query(CallSession).count()
             completed_calls = session.query(CallSession).filter(CallSession.status == CallStatus.COMPLETED).count()
-            failed_calls = session.query(CallSession).filter(CallSession.status == CallStatus.FAILED).count()
+            failed_calls = session.query(CallSession).filter(CallStatus.FAILED).count()
             in_progress_calls = session.query(CallSession).filter(CallSession.status.in_([CallStatus.IN_PROGRESS, CallStatus.RINGING])).count()
             
             return {
@@ -444,6 +454,17 @@ class CallManagementService:
             
             # Create Redis session for this call
             self.redis_manager.create_call_session(temp_call_id, customer_data, websocket_id)
+            
+            # Also store by phone number for easy lookup by WebSocket
+            clean_phone = phone_number.replace('+', '').replace('-', '').replace(' ', '')
+            phone_key = f"customer_phone_{clean_phone}"
+            self.redis_manager.store_temp_data(phone_key, customer_data, ttl=3600)
+            
+            # Store temp_call_id mapping by phone for reverse lookup
+            temp_call_key = f"temp_call_phone_{clean_phone}"
+            self.redis_manager.store_temp_data(temp_call_key, temp_call_id, ttl=3600)
+            
+            print(f"[CallService] Stored customer data for call: temp_call_id={temp_call_id}, phone_key={phone_key}, name={name}")
             
             # Trigger Exotel call with customer data
             exotel_response = await self._trigger_exotel_call(phone_number, temp_call_id, customer_data)
@@ -579,37 +600,45 @@ class CallManagementService:
     async def _trigger_exotel_call(self, customer_number: str, temp_call_id: str, customer_data: Dict[str, Any] = None) -> Dict[str, Any]:
         """Trigger Exotel outbound call with customer data in pass-through URL"""
         
-        # Get base URL for pass-through handler
-        base_url = os.getenv("BASE_URL", "https://your-domain.com")  # You'll need to set this
+        # Get base URL for pass-through handler - use localhost for development
+        base_url = os.getenv("BASE_URL", "http://localhost:8000")
         
-        # Build pass-through URL with customer data
-        passthru_params = {
-            "customer_id": customer_data.get('id', ''),
-            "customer_name": customer_data.get('name', 'Unknown'),
-            "loan_id": customer_data.get('loan_id', ''),
-            "amount": customer_data.get('amount', ''),
-            "due_date": customer_data.get('due_date', ''),
-            "language_code": customer_data.get('language_code', 'hi-IN'),
-            "state": customer_data.get('state', ''),
-            "temp_call_id": temp_call_id
-        }
-        
-        # Create query string for pass-through URL
-        from urllib.parse import urlencode
-        query_string = urlencode(passthru_params)
-        passthru_url = f"{base_url}/passthru-handler?{query_string}"
-        
-        print(f"🔗 Pass-through URL: {passthru_url}")
-        
+        # Build the CustomField string to pass customer data to the Exotel Applet.
+        # This data will be available in the 'start' event of the WebSocket.
+        custom_field_parts = [
+            f"customer_id={customer_data.get('id', '')}",
+            f"customer_name={customer_data.get('name', 'Unknown')}",
+            f"loan_id={customer_data.get('loan_id', '')}",
+            f"amount={customer_data.get('amount', '')}",
+            f"due_date={customer_data.get('due_date', '')}",
+            f"language_code={customer_data.get('language_code', 'hi-IN')}",
+            f"state={customer_data.get('state', '')}",
+            f"temp_call_id={temp_call_id}"
+        ]
+        custom_field = "|".join(custom_field_parts)
+
+        # The URL for an Applet-based call. The Applet in your Exotel dashboard
+        # should be configured to connect to your server's /stream WebSocket endpoint.
+        flow_url = f"http://my.exotel.com/{self.exotel_sid}/exoml/start_voice/{self.exotel_flow_app_id}"
+
+        print(f"🔗 Using Applet Flow URL: {flow_url}")
+        print(f"� Passing data via CustomField")
+
         url = f"https://api.exotel.com/v1/Accounts/{self.exotel_sid}/Calls/connect.json"
-        
+
+        # This payload initiates a call to the customer and connects them to your voicebot Applet.
         payload = {
             "From": customer_number,
+            "Url": flow_url,
             "CallerId": self.exotel_virtual_number,
-            "Url": passthru_url,  # Use our pass-through URL instead of flow URL
             "CallType": "trans",
-            "CustomField": temp_call_id  # Pass temp ID for tracking
+            "TimeLimit": "3600",
+            "TimeOut": "30",
+            "StatusCallback": f"{base_url}/api/exotel-webhook",
+            "CustomField": custom_field
         }
+        
+        print(f"📞 Exotel API Payload: {payload}")
         
         try:
             async with httpx.AsyncClient(auth=(self.exotel_api_key, self.exotel_token)) as client:

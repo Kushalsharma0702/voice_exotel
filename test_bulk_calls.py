@@ -13,13 +13,13 @@ def test_csv_upload_and_calls():
     
     base_url = "http://localhost:8000"
     
-    # Sample CSV content with your column format
-    csv_content = """Name,Phone,Loan ID,Amount,Due Date,State
-Riddhi Mittal,+917417119014,LOAN12345,15000,2025-08-11,Uttar Pradesh
-Aman Verma,+919812345678,LOAN67890,22000,2025-08-17,Delhi
-Sneha Kapoor,+918765432109,LOAN54321,18000,2025-08-14,Maharashtra
-Vikram Desai,+917001122334,LOAN98765,25000,2025-07-30,Karnataka
-Tanya Sharma,+919999888877,LOAN11223,13000,2025-08-07,Rajasthan"""
+    # Read CSV content from the test data file
+    try:
+        with open("test_data.csv", "r", encoding="utf-8") as f:
+            csv_content = f.read()
+    except FileNotFoundError:
+        print("❌ Error: test_data.csv not found. Please create it.")
+        return
     
     print("🧪 Testing CSV Upload and Call Triggering...")
     print("=" * 60)

@@ -13,7 +13,7 @@ def test_passthru_handler():
     
     base_url = "http://localhost:8000"
     
-    # Sample customer data
+    # Sample customer data from a more realistic source (e.g., a dict)
     customer_data = {
         "customer_id": "cust_123",
         "customer_name": "Riddhi Mittal",

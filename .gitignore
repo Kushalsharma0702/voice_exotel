@@ -26,7 +26,8 @@ build/
 coverage/
 *.log
 
-
+working
+working/
 
 
 
