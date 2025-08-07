@@ -801,12 +801,55 @@ GREETING_TEMPLATE = {
 }
 
 def get_customer_by_phone(phone_number: str):
-    """Get customer data by phone number"""
-    global customer_data
-    for customer in customer_data:
-        if customer.get('phone') == phone_number:
-            return customer
-    return None
+    """Get customer data by phone number from database"""
+    try:
+        from database.schemas import get_customer_by_phone as db_get_customer_by_phone
+        session = db_manager.get_session()
+        
+        # Clean phone number for database lookup - more comprehensive approach
+        clean_phone = phone_number.replace('+', '').replace('-', '').replace(' ', '')
+        
+        # Extract just the 10-digit number if it's an Indian number
+        if len(clean_phone) >= 10:
+            last_10_digits = clean_phone[-10:]
+        else:
+            last_10_digits = clean_phone
+        
+        # Try multiple phone number formats that might be in the database
+        possible_phones = [
+            phone_number,              # Original format
+            clean_phone,              # Cleaned format
+            f"+{clean_phone}",        # With + prefix
+            f"+91{last_10_digits}",   # With +91 prefix
+            f"91{last_10_digits}",    # With 91 prefix (no +)
+            last_10_digits            # Just 10 digits
+        ]
+        
+        # Remove duplicates and empty values
+        possible_phones = list(set([p for p in possible_phones if p]))
+        
+        db_customer = None
+        for phone_variant in possible_phones:
+            db_customer = db_get_customer_by_phone(session, phone_variant)
+            if db_customer:
+                break
+        
+        session.close()
+        
+        if db_customer:
+            return {
+                'name': db_customer.name,
+                'phone': db_customer.phone_number,
+                'loan_id': db_customer.loan_id,
+                'amount': db_customer.amount,
+                'due_date': db_customer.due_date,
+                'state': db_customer.state,
+                'lang': db_customer.language_code or 'en-IN'
+            }
+        return None
+    except Exception as e:
+        print(f"❌ Error getting customer from database: {e}")
+        return None
 
 # --- New TTS Helper Functions for the specified flow ---
 
@@ -1037,10 +1080,10 @@ async def exotel_voicebot(websocket: WebSocket, temp_call_id: str = None, call_s
                         redis_data = redis_manager.get_call_session(temp_call_id)
                         if redis_data:
                             customer_info = {
-                                'name': redis_data.get('name', 'Customer'),
-                                'loan_id': redis_data.get('loan_id', 'XXXX'),
-                                'amount': redis_data.get('amount', 'XXXX'),
-                                'due_date': redis_data.get('due_date', 'XXXX'),
+                                'name': redis_data.get('name'),
+                                'loan_id': redis_data.get('loan_id'),
+                                'amount': redis_data.get('amount'),
+                                'due_date': redis_data.get('due_date'),
                                 'lang': redis_data.get('language_code', 'en-IN'),
                                 'phone': redis_data.get('phone_number', ''),
                                 'state': redis_data.get('state', '')
@@ -1052,10 +1095,10 @@ async def exotel_voicebot(websocket: WebSocket, temp_call_id: str = None, call_s
                         redis_data = redis_manager.get_call_session(call_sid)
                         if redis_data:
                             customer_info = {
-                                'name': redis_data.get('name', 'Customer'),
-                                'loan_id': redis_data.get('loan_id', 'XXXX'),
-                                'amount': redis_data.get('amount', 'XXXX'),
-                                'due_date': redis_data.get('due_date', 'XXXX'),
+                                'name': redis_data.get('name'),
+                                'loan_id': redis_data.get('loan_id'),
+                                'amount': redis_data.get('amount'),
+                                'due_date': redis_data.get('due_date'),
                                 'lang': redis_data.get('language_code', 'en-IN'),
                                 'phone': redis_data.get('phone_number', ''),
                                 'state': redis_data.get('state', '')
@@ -1070,10 +1113,10 @@ async def exotel_voicebot(websocket: WebSocket, temp_call_id: str = None, call_s
                         redis_data = redis_manager.get_temp_data(phone_key)
                         if redis_data:
                             customer_info = {
-                                'name': redis_data.get('name', 'Customer'),
-                                'loan_id': redis_data.get('loan_id', 'XXXX'),
-                                'amount': redis_data.get('amount', 'XXXX'),
-                                'due_date': redis_data.get('due_date', 'XXXX'),
+                                'name': redis_data.get('name'),
+                                'loan_id': redis_data.get('loan_id'),
+                                'amount': redis_data.get('amount'),
+                                'due_date': redis_data.get('due_date'),
                                 'lang': redis_data.get('language_code', 'en-IN'),
                                 'phone': redis_data.get('phone_number', ''),
                                 'state': redis_data.get('state', '')
@@ -1094,10 +1137,10 @@ async def exotel_voicebot(websocket: WebSocket, temp_call_id: str = None, call_s
                                 custom_data[key] = value
                         
                         customer_info = {
-                            'name': custom_data.get('customer_name', 'Customer'),
-                            'loan_id': custom_data.get('loan_id', 'XXXX'),
-                            'amount': custom_data.get('amount', 'XXXX'),
-                            'due_date': custom_data.get('due_date', 'XXXX'),
+                            'name': custom_data.get('customer_name'),
+                            'loan_id': custom_data.get('loan_id'),
+                            'amount': custom_data.get('amount'),
+                            'due_date': custom_data.get('due_date'),
                             'lang': custom_data.get('language_code', 'en-IN'),
                             'phone': '',
                             'state': custom_data.get('state', '')
@@ -1106,21 +1149,82 @@ async def exotel_voicebot(websocket: WebSocket, temp_call_id: str = None, call_s
                     except Exception as e:
                         print(f"[WebSocket] ❌ Error parsing CustomField: {e}")
                 
-                # 3. Try to get from the global customer_data (fallback)
-                if not customer_info and customer_data:
-                    customer_info = customer_data[0]  # Use first customer as default
-                    print(f"[WebSocket] Using first customer from uploaded data: {customer_info['name']} - Language: {customer_info['lang']}")
+                # 3. Try to get customer data from database by phone number (if available)
+                if not customer_info and phone:
+                    print(f"[WebSocket] Looking up customer in database by phone: {phone}")
+                    try:
+                        from database.schemas import get_customer_by_phone
+                        session = db_manager.get_session()
+                        
+                        # Clean phone number for database lookup - more comprehensive approach
+                        clean_phone = phone.replace('+', '').replace('-', '').replace(' ', '')
+                        
+                        # Extract just the 10-digit number if it's an Indian number
+                        if len(clean_phone) >= 10:
+                            last_10_digits = clean_phone[-10:]
+                        else:
+                            last_10_digits = clean_phone
+                        
+                        # Try multiple phone number formats that might be in the database
+                        possible_phones = [
+                            phone,                      # Original format
+                            clean_phone,               # Cleaned format
+                            f"+{clean_phone}",         # With + prefix
+                            f"+91{last_10_digits}",    # With +91 prefix
+                            f"91{last_10_digits}",     # With 91 prefix (no +)
+                            last_10_digits             # Just 10 digits
+                        ]
+                        
+                        # Remove duplicates and empty values
+                        possible_phones = list(set([p for p in possible_phones if p]))
+                        print(f"[WebSocket] Trying phone formats: {possible_phones}")
+                        
+                        db_customer = None
+                        for phone_variant in possible_phones:
+                            db_customer = get_customer_by_phone(session, phone_variant)
+                            if db_customer:
+                                print(f"[WebSocket] ✅ Found customer with phone variant: {phone_variant}")
+                                break
+                        
+                        if db_customer:
+                            customer_info = {
+                                'name': db_customer.name,
+                                'loan_id': db_customer.loan_id,
+                                'amount': db_customer.amount,
+                                'due_date': db_customer.due_date,
+                                'lang': db_customer.language_code or 'en-IN',
+                                'phone': db_customer.phone_number,
+                                'state': db_customer.state or ''
+                            }
+                            print(f"[WebSocket] ✅ Found customer in database: {customer_info['name']} (Phone: {customer_info['phone']})")
+                        else:
+                            print(f"[WebSocket] ❌ Customer not found in database for phone: {phone}")
+                        
+                        session.close()
+                    except Exception as e:
+                        print(f"[WebSocket] ❌ Error looking up customer in database: {e}")
                 
-                # 4. Use fallback customer data if nothing else works
+                # 4. If no customer found anywhere, throw an error instead of using fallback data
                 if not customer_info:
-                    customer_info = {
-                        "name": "Customer",
-                        "loan_id": "XXXX",
-                        "amount": "XXXX",
-                        "due_date": "XXXX",
-                        "lang": "en-IN"
-                    }
-                    print("[WebSocket] Using fallback customer data - no data source available")
+                    print("[WebSocket] ❌ No customer data found - cannot proceed without real customer information")
+                    await websocket.send_text(json.dumps({
+                        "event": "error",
+                        "message": "Customer data not found. Please ensure customer information is uploaded and call is triggered properly."
+                    }))
+                    return
+                
+                # 5. Validate customer data has required fields
+                required_fields = ['name', 'loan_id', 'amount', 'due_date']
+                missing_fields = [field for field in required_fields if not customer_info.get(field)]
+                if missing_fields:
+                    print(f"[WebSocket] ❌ Customer data missing required fields: {missing_fields}")
+                    await websocket.send_text(json.dumps({
+                        "event": "error",
+                        "message": f"Customer data incomplete. Missing fields: {', '.join(missing_fields)}"
+                    }))
+                    return
+                
+                print(f"[WebSocket] ✅ Customer data validated: {customer_info['name']} - Loan: {customer_info['loan_id']}, Amount: ₹{customer_info['amount']}")
                 
                 if conversation_stage == "INITIAL_GREETING":
                     print(f"[WebSocket] 1. Sending initial greeting to {customer_info['name']} in {customer_info['lang']}.")
