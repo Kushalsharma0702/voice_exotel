@@ -440,7 +440,8 @@ class CallManagementService:
             self.db_manager.close_session(session)
     
     async def _trigger_call_from_data(self, customer_data: Dict[str, Any], websocket_id: str = None) -> Dict[str, Any]:
-        """Trigger call from raw customer data without saving to database first"""
+        """Trigger call from raw customer data and create database records"""
+        session = self.db_manager.get_session()
         try:
             # Extract required fields
             phone_number = customer_data.get('phone', customer_data.get('phone_number', ''))
@@ -451,6 +452,21 @@ class CallManagementService:
             
             # Generate temporary call ID
             temp_call_id = f"temp_call_{uuid.uuid4().hex[:12]}"
+            
+            # First, check if customer exists in database, if not create one
+            customer = get_customer_by_phone(session, phone_number)
+            if not customer:
+                # Create new customer record
+                customer_dict = {
+                    'name': name,
+                    'phone_number': phone_number,
+                    'loan_id': customer_data.get('loan_id', ''),
+                    'amount': customer_data.get('amount', ''),
+                    'due_date': customer_data.get('due_date', ''),
+                    'state': customer_data.get('state', ''),
+                    'language_code': customer_data.get('language_code', 'hi-IN')
+                }
+                customer = create_customer(session, customer_dict)
             
             # Create Redis session for this call
             self.redis_manager.create_call_session(temp_call_id, customer_data, websocket_id)
@@ -472,11 +488,24 @@ class CallManagementService:
             if exotel_response.get('success'):
                 call_sid = exotel_response['call_sid']
                 
-                # Update Redis session with actual call SID
-                self.redis_manager.update_call_session(temp_call_id, {'call_sid': call_sid})
+                # Create database call session record
+                call_session = create_call_session(
+                    session=session,
+                    call_sid=call_sid,
+                    customer_id=str(customer.id),
+                    websocket_session_id=websocket_id
+                )
                 
-                # Update status
+                # Update Redis session with actual call SID and database ID
+                self.redis_manager.update_call_session(temp_call_id, {
+                    'call_sid': call_sid,
+                    'customer_id': str(customer.id),
+                    'call_session_id': str(call_session.id)
+                })
+                
+                # Update status in both Redis and Database
                 self.redis_manager.update_call_status(call_sid, CallStatus.RINGING, "Call initiated successfully")
+                update_call_status(session, call_sid, CallStatus.RINGING, "Call initiated successfully")
                 
                 return {
                     'success': True,
@@ -497,6 +526,8 @@ class CallManagementService:
                 
         except Exception as e:
             return {'success': False, 'error': str(e), 'customer_data': customer_data}
+        finally:
+            self.db_manager.close_session(session)
     
     # Helper methods
     async def _parse_customer_file(self, file_data: bytes, filename: str) -> List[Dict[str, Any]]:
@@ -600,42 +631,41 @@ class CallManagementService:
     async def _trigger_exotel_call(self, customer_number: str, temp_call_id: str, customer_data: Dict[str, Any] = None) -> Dict[str, Any]:
         """Trigger Exotel outbound call with customer data in pass-through URL"""
         
-        # Get base URL for pass-through handler - use localhost for development
+        # Get base URL for pass-through handler
         base_url = os.getenv("BASE_URL", "http://localhost:8000")
         
-        # Build the CustomField string to pass customer data to the Exotel Applet.
-        # This data will be available in the 'start' event of the WebSocket.
-        custom_field_parts = [
-            f"customer_id={customer_data.get('id', '')}",
-            f"customer_name={customer_data.get('name', 'Unknown')}",
-            f"loan_id={customer_data.get('loan_id', '')}",
-            f"amount={customer_data.get('amount', '')}",
-            f"due_date={customer_data.get('due_date', '')}",
-            f"language_code={customer_data.get('language_code', 'hi-IN')}",
-            f"state={customer_data.get('state', '')}",
-            f"temp_call_id={temp_call_id}"
-        ]
-        custom_field = "|".join(custom_field_parts)
+        # Build pass-through URL with customer data as query parameters
+        # This ensures customer data is available when Exotel connects to our server
+        passthru_params = {
+            "customer_id": customer_data.get('id', ''),
+            "customer_name": customer_data.get('name', 'Unknown'),
+            "loan_id": customer_data.get('loan_id', ''),
+            "amount": customer_data.get('amount', ''),
+            "due_date": customer_data.get('due_date', ''),
+            "language_code": customer_data.get('language_code', 'hi-IN'),
+            "state": customer_data.get('state', ''),
+            "temp_call_id": temp_call_id
+        }
+        
+        # Encode parameters for URL
+        from urllib.parse import urlencode
+        passthru_url = f"{base_url}/passthru-handler?" + urlencode(passthru_params)
+        
+        print(f"🔗 Pass-Through URL: {passthru_url}")
+        print(f"📞 Calling customer: {customer_data.get('name')} at {customer_number}")
 
-        # The URL for an Applet-based call. The Applet in your Exotel dashboard
-        # should be configured to connect to your server's /stream WebSocket endpoint.
-        flow_url = f"http://my.exotel.com/{self.exotel_sid}/exoml/start_voice/{self.exotel_flow_app_id}"
-
-        print(f"🔗 Using Applet Flow URL: {flow_url}")
-        print(f"� Passing data via CustomField")
-
+        # Call Exotel API
         url = f"https://api.exotel.com/v1/Accounts/{self.exotel_sid}/Calls/connect.json"
 
-        # This payload initiates a call to the customer and connects them to your voicebot Applet.
+        # This payload initiates a call to the customer and connects them to your pass-through URL
         payload = {
             "From": customer_number,
-            "Url": flow_url,
+            "Url": passthru_url,  # Use pass-through URL instead of Applet
             "CallerId": self.exotel_virtual_number,
             "CallType": "trans",
             "TimeLimit": "3600",
             "TimeOut": "30",
-            "StatusCallback": f"{base_url}/api/exotel-webhook",
-            "CustomField": custom_field
+            "StatusCallback": f"{base_url}/api/exotel-webhook"
         }
         
         print(f"📞 Exotel API Payload: {payload}")
@@ -649,24 +679,28 @@ class CallManagementService:
                     call_sid = response_data.get('Call', {}).get('Sid')
                     
                     if call_sid:
+                        print(f"✅ Exotel call initiated: CallSid={call_sid}")
                         return {
                             'success': True,
                             'call_sid': call_sid,
                             'response': response_data
                         }
                     else:
+                        print(f"❌ No CallSid in response: {response_data}")
                         return {
                             'success': False,
                             'error': 'No CallSid in response',
                             'response': response_data
                         }
                 else:
+                    print(f"❌ Exotel API error: HTTP {response.status_code}: {response.text}")
                     return {
                         'success': False,
                         'error': f'HTTP {response.status_code}: {response.text}'
                     }
                     
         except Exception as e:
+            print(f"❌ Exception calling Exotel API: {e}")
             return {
                 'success': False,
                 'error': str(e)

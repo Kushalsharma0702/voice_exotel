@@ -1,5 +1,6 @@
 import base64
 import tempfile
+import io
 from pydub import AudioSegment
 from sarvamai import SarvamAI
 from sarvamai import AsyncSarvamAI, AudioOutput
@@ -45,13 +46,9 @@ class SarvamHandler:
         print("[Sarvam REST] 📝 Transcript Arun:", response.transcript)
         return response.transcript
     
-    async def synthesize_tts_end(self, text: str,lang: str) -> bytes:
-        print(f"[Sarvam TTS] 🔁 Starting text-to-speech greetinggreeting: {text}")
-        print(f"[Sarvam TTS] 🔁 Starting text-to-speech synthesis lang: {lang}")
+    async def synthesize_tts_end(self, text: str, lang: str) -> bytes:
+        print(f"[Sarvam TTS] 🔁 Starting text-to-speech for: {text} in {lang}")
 
-        # Step 1: Translate text (e.g., English → Tamil)
-       
-        # Step 2: TTS generation
         try:
             response = self.client.text_to_speech.convert(
                 text=text,
@@ -61,39 +58,38 @@ class SarvamHandler:
             )
             audio_base64 = response.audios[0] if response.audios else None
             if not audio_base64:
-                print("[Sarvam TTS] ❌ No audio returned from TTS.")
+                print("[Sarvam TTS] ❌ No audio data returned from API.")
                 return None
+            
             audio_bytes = base64.b64decode(audio_base64)
-        except Exception as e:
-            print(f"[Sarvam TTS] ❌ TTS generation failed: {e}")
-            return None
-         # Step 3: Re-encode to SLIN WAV (8kHz mono, 16-bit)
-        try:
-            print("[Sarvam TTS] 🎧 Re-encoding to SLIN 8kHz mono")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as mp3_file:
-                mp3_file.write(audio_bytes)
-                mp3_path = mp3_file.name
-
-            audio = AudioSegment.from_file(mp3_path)
-            wav_audio = audio.set_frame_rate(8000).set_channels(1).set_sample_width(2)  # SLIN: 8kHz mono 16-bit
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
-                wav_audio.export(f.name, format="wav")
-                f.seek(0)
-                final_bytes = f.read()
-
-            if not final_bytes:
-                print("[Sarvam TTS] ❌ Final WAV bytes are empty.")
+            
+            # The audio is likely mp3, convert it to 8kHz mono 16-bit PCM (slin)
+            try:
+                audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+            except Exception as dec_err:
+                print(f"[Sarvam TTS] ❌ Decode mp3 failed: {dec_err}")
                 return None
 
-            print(f"[Sarvam TTS] ✅ Audio ready (size: {len(final_bytes)} bytes)")
-            return final_bytes
+            slin_audio = audio_segment.set_frame_rate(8000).set_channels(1).set_sample_width(2)
+            raw_pcm = slin_audio.raw_data
+            size = len(raw_pcm)
+            if raw_pcm[:4] == b'RIFF' and size > 44:
+                # Safety: if pydub ever returned WAV with header (shouldn't for raw_data) remove it
+                print("[Sarvam TTS] ⚠️ Unexpected RIFF header in raw_data – stripping")
+                raw_pcm = raw_pcm[44:]
+                size = len(raw_pcm)
+            print(f"[Sarvam TTS] ✅ Audio ready PCM size={size} bytes, first10={raw_pcm[:10].hex()}")
+            if size < 200:
+                print("[Sarvam TTS] ⚠️ Very small audio payload – may be silence")
+            return raw_pcm
 
         except Exception as e:
-            print(f"[Sarvam TTS] ❌ Error during WAV conversion: {e}")
+            print(f"[Sarvam TTS] ❌ An error occurred: {e}")
+            import traceback
+            traceback.print_exc()
             return None
    
-    async def synthesize_tts(self, text: str,lang: str) -> bytes:
+    async def synthesize_tts(self, text: str, lang: str) -> bytes:
         print("[Sarvam TTS] 🔁 Starting text-to-speech synthesis")
 
         # Step 1: Translate text (e.g., English → Tamil)
@@ -113,7 +109,7 @@ class SarvamHandler:
         try:
             response = self.client.text_to_speech.convert(
                 text=speak,
-                language_code=lang_code,
+                target_language_code=lang,
                 speaker="anushka",
                 model="bulbul:v2"
             )
@@ -125,34 +121,19 @@ class SarvamHandler:
         except Exception as e:
             print(f"[Sarvam TTS] ❌ TTS generation failed: {e}")
             return None
-        
 
         # Step 3: Re-encode to SLIN WAV (8kHz mono, 16-bit)
         try:
             print("[Sarvam TTS] 🎧 Re-encoding to SLIN 8kHz mono")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as mp3_file:
-                mp3_file.write(audio_bytes)
-                mp3_path = mp3_file.name
-
-            audio = AudioSegment.from_file(mp3_path)
-            wav_audio = audio.set_frame_rate(8000).set_channels(1).set_sample_width(2)  # SLIN: 8kHz mono 16-bit
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
-                wav_audio.export(f.name, format="wav")
-                f.seek(0)
-                final_bytes = f.read()
-
-            if not final_bytes:
-                print("[Sarvam TTS] ❌ Final WAV bytes are empty.")
-                return None
-
+            audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+            slin_audio = audio_segment.set_frame_rate(8000).set_channels(1).set_sample_width(2)
+            final_bytes = slin_audio.raw_data
             print(f"[Sarvam TTS] ✅ Audio ready (size: {len(final_bytes)} bytes)")
             return final_bytes
-
         except Exception as e:
             print(f"[Sarvam TTS] ❌ Error during WAV conversion: {e}")
             return None
-
+   
     async def synthesize_tts_test_NOT_IN_USE(self, text: str) -> bytes:
         print("synthesize_tts")
 
@@ -181,4 +162,4 @@ class SarvamHandler:
                     audio_data.extend(audio_chunk)
 
             print("[Sarvam TTS] 🎤 TTS generation complete")
-            return bytes(audio_data)    
+            return bytes(audio_data)
