@@ -712,9 +712,6 @@
                 
                 const formData = new FormData();
                 formData.append('file', this.currentFile);
-                if (this.websocketId) {
-                    formData.append('websocket_id', this.websocketId);
-                }
 
                 try {
                     const response = await fetch('/api/upload-customers', {
@@ -748,15 +745,19 @@
                 this.updateUploadStatus('Triggering calls to all customers...', 'info');
                 
                 try {
-                    // Trigger calls directly from preview data
+                    // By the time we trigger calls, the customers should be in the database
+                    // So we fetch the latest customer list from the DB via an API call
+                    const customersResponse = await fetch('/api/customers');
+                    const customers = await customersResponse.json();
+                    const customerIds = customers.map(c => c.id);
+
                     const response = await fetch('/api/trigger-bulk-calls', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
                         },
                         body: JSON.stringify({
-                            customer_data: this.previewCustomers,
-                            websocket_id: this.websocketId
+                            customer_ids: customerIds
                         })
                     });
 
@@ -793,13 +794,16 @@
                 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                 const hostname = window.location.hostname;
                 const port = window.location.port ? `:${window.location.port}` : '';
+                const session_id = 'dashboard-' + Date.now(); // Create a unique session ID for the dashboard
                 
-                this.ws = new WebSocket(`${protocol}//${hostname}${port}/ws`);
+                this.ws = new WebSocket(`${protocol}//${hostname}${port}/ws/dashboard/${session_id}`);
 
                 this.ws.onopen = () => {
                     this.log('WebSocket connected successfully', 'success');
                     this.updateConnectionStatus(true);
                     this.reconnectAttempts = 0;
+                    // On connect, immediately fetch all customers
+                    this.fetchCustomers();
                 };
 
                 this.ws.onmessage = (event) => {
@@ -813,7 +817,7 @@
                 };
 
                 this.ws.onerror = (error) => {
-                    this.log(`WebSocket error: ${error}`, 'error');
+                    this.log(`WebSocket error: ${JSON.stringify(error)}`, 'error');
                     this.updateConnectionStatus(false);
                 };
             }
@@ -906,36 +910,56 @@
             }
 
             handleStatusUpdate(message) {
-                const { call_sid, status, message: statusMessage } = message;
+                const { call_sid, status, customer_id, message: statusMessage } = message;
                 
                 this.log(`Call ${call_sid}: ${status} - ${statusMessage}`, 'info');
                 
-                // Update active calls
+                // Update status badge in the main customer table
+                const statusBadge = document.getElementById(`status-${customer_id}`);
+                if (statusBadge) {
+                    statusBadge.textContent = status;
+                    statusBadge.className = `status-badge status-${status.toLowerCase().replace(/ /g, '-')}`;
+                }
+
+                // Update active calls display
                 if (this.activeCalls.has(call_sid)) {
                     const callData = this.activeCalls.get(call_sid);
                     callData.status = status;
                     callData.last_update = new Date().toISOString();
                     
-                    // Remove from active calls if completed/failed
-                    if (['completed', 'failed', 'disconnected'].includes(status)) {
+                    // Remove from active calls if it's a terminal state
+                    if (['completed', 'failed', 'disconnected', 'agent-transfer-completed'].includes(status)) {
                         this.activeCalls.delete(call_sid);
                     }
                     
                     this.updateActiveCallsDisplay();
+                } else if (!['completed', 'failed', 'disconnected'].includes(status)) {
+                    // If we get a status for a call not in our active list (e.g., page reloaded), add it
+                    const customer = this.customers.find(c => c.id === customer_id);
+                    if (customer) {
+                        this.activeCalls.set(call_sid, {
+                            call_sid: call_sid,
+                            customer: customer,
+                            status: status,
+                            timestamp: new Date().toISOString()
+                        });
+                        this.updateActiveCallsDisplay();
+                    }
                 }
             }
 
             triggerSingleCall() {
-                const phoneNumber = document.getElementById('singleCallNumber').value.trim();
+                const phoneNumberInput = document.getElementById('singleCallNumber');
+                const phoneNumber = phoneNumberInput.value.trim();
                 if (!phoneNumber) {
                     this.showToast('Please enter a phone number', 'warning');
                     return;
                 }
 
-                // Find customer by phone number
+                // Find customer by phone number from the local list
                 const customer = this.customers.find(c => c.phone_number === phoneNumber);
                 if (!customer) {
-                    this.showToast('Customer not found', 'warning');
+                    this.showToast('Customer not found in the database. Please upload their data first.', 'warning');
                     return;
                 }
 
@@ -944,7 +968,8 @@
                     customer_id: customer.id
                 });
 
-                this.log(`Triggering call to ${phoneNumber}`, 'info');
+                this.log(`Requesting call to ${phoneNumber}`, 'info');
+                phoneNumberInput.value = ''; // Clear input after triggering
             }
 
             triggerBulkCalls() {
@@ -960,7 +985,7 @@
                     customer_ids: customerIds
                 });
 
-                this.log(`Triggering bulk calls for ${customerIds.length} customers`, 'info');
+                this.log(`Requesting bulk calls for ${customerIds.length} customers`, 'info');
                 document.getElementById('callAllButton').disabled = true;
             }
 
@@ -978,7 +1003,7 @@
                     customer_ids: selectedIds
                 });
 
-                this.log(`Triggering calls for ${selectedIds.length} selected customers`, 'info');
+                this.log(`Requesting calls for ${selectedIds.length} selected customers`, 'info');
             }
 
             transferToAgent(callSid) {
@@ -990,21 +1015,43 @@
                 this.log(`Requesting agent transfer for call ${callSid}`, 'info');
             }
 
+            async fetchCustomers() {
+                try {
+                    const response = await fetch('/api/customers');
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    this.customers = await response.json();
+                    this.updateCustomerTable();
+                    this.log(`Fetched ${this.customers.length} customers from the database.`, 'success');
+                } catch (error) {
+                    this.log(`Failed to fetch customers: ${error}`, 'error');
+                    this.showToast('Could not load customer data.', 'error');
+                }
+            }
+
             updateCustomerTable() {
                 const tbody = document.getElementById('customerTableBody');
                 tbody.innerHTML = '';
 
+                if (this.customers.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="9" style="text-align: center;">No customers found in the database.</td></tr>';
+                    document.getElementById('callAllButton').disabled = true;
+                    return;
+                }
+
                 this.customers.forEach(customer => {
                     const row = document.createElement('tr');
+                    row.id = `customer-row-${customer.id}`;
                     row.innerHTML = `
                         <td><input type="checkbox" name="customerSelect" value="${customer.id}"></td>
                         <td>${customer.name}</td>
                         <td>${customer.phone_number}</td>
                         <td>${customer.loan_id}</td>
                         <td>₹${customer.amount}</td>
-                        <td>${customer.due_date}</td>
+                        <td>${new Date(customer.due_date).toLocaleDateString()}</td>
                         <td>${customer.state}</td>
-                        <td><span class="status-badge status-initiated">Ready</span></td>
+                        <td><span id="status-${customer.id}" class="status-badge status-initiated">Ready</span></td>
                         <td>
                             <button class="call-button" onclick="dashboard.triggerSingleCallById('${customer.id}')">
                                 📞 Call
@@ -1015,6 +1062,7 @@
                 });
 
                 // Update buttons
+                document.getElementById('callAllButton').disabled = false;
                 document.getElementById('callSelectedButton').disabled = false;
             }
 

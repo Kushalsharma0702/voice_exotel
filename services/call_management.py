@@ -144,8 +144,10 @@ class CallManagementService:
             # Get customer data
             customer = session.query(Customer).filter(Customer.id == customer_id).first()
             if not customer:
-                return {'success': False, 'error': 'Customer not found'}
+                return {'success': False, 'error': f"Customer with ID {customer_id} not found"}
             
+            print(f"✅ [CHECKPOINT] Found customer: {customer.name} ({customer.phone_number})")
+
             # Generate temporary call ID (before Exotel assigns SID)
             temp_call_id = f"temp_call_{uuid.uuid4().hex[:12]}"
             
@@ -158,7 +160,8 @@ class CallManagementService:
                 'loan_id': customer.loan_id,
                 'amount': customer.amount,
                 'due_date': customer.due_date,
-                'language_code': customer.language_code
+                'language_code': customer.language_code,
+                'temp_call_id': temp_call_id
             }
             
             # Store by temp_call_id
@@ -173,10 +176,12 @@ class CallManagementService:
             temp_call_key = f"temp_call_phone_{customer.phone_number.replace('+', '').replace('-', '').replace(' ', '')}"
             self.redis_manager.store_temp_data(temp_call_key, temp_call_id, ttl=3600)
             
+            print(f"📞 [CHECKPOINT] About to trigger Exotel call for temp_call_id: {temp_call_id}")
             # Trigger Exotel call with customer data
             exotel_response = await self._trigger_exotel_call(customer.phone_number, temp_call_id, customer_data)
             
             if exotel_response['success']:
+                print(f"✅ [CHECKPOINT] Exotel call triggered successfully for temp_call_id: {temp_call_id}")
                 call_sid = exotel_response['call_sid']
                 
                 # Create database call session with actual Exotel SID
@@ -197,6 +202,7 @@ class CallManagementService:
                     'status': CallStatus.RINGING
                 }
             else:
+                print(f"❌ [CHECKPOINT] Exotel call failed for temp_call_id: {temp_call_id}. Error: {exotel_response.get('error')}")
                 # Update Redis session with failure
                 self.redis_manager.update_call_status(temp_call_id, CallStatus.FAILED, f"Failed to initiate call: {exotel_response['error']}")
                 
@@ -207,6 +213,7 @@ class CallManagementService:
                 }
                 
         except Exception as e:
+            print(f"❌ [CRITICAL] Exception in trigger_single_call: {e}")
             return {'success': False, 'error': str(e)}
         finally:
             self.db_manager.close_session(session)
@@ -590,14 +597,15 @@ class CallManagementService:
                     print(f"⚠️ Skipping row with missing phone number: {customer_data}")
                     continue
                 
-                # Clean phone number (remove any non-digit characters except +)
+                # Clean phone number (remove spaces, hyphens, parentheses but keep + and digits)
                 phone = customer_data['phone_number']
                 if phone:
                     # Keep only digits and + sign
                     import re
                     phone = re.sub(r'[^\d+]', '', phone)
                     if not phone.startswith('+'):
-                        phone = '+91' + phone.lstrip('0')  # Add India country code if missing
+                        # Keep the number as-is from CSV, just add +91 prefix (no leading zero removal)
+                        phone = '+91' + phone
                     customer_data['phone_number'] = phone
                 
                 # Determine language code from state
@@ -628,84 +636,57 @@ class CallManagementService:
         except Exception as e:
             raise Exception(f"Failed to parse file: {str(e)}")
     
-    async def _trigger_exotel_call(self, customer_number: str, temp_call_id: str, customer_data: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Trigger Exotel outbound call with customer data in pass-through URL"""
+    async def _trigger_exotel_call(self, to_number: str, temp_call_id: str, customer_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Internal method to trigger Exotel call and connect it to the ExoML flow."""
         
-        # Get base URL for pass-through handler
-        base_url = os.getenv("BASE_URL", "http://localhost:8000")
-        
-        # Build pass-through URL with customer data as query parameters
-        # This ensures customer data is available when Exotel connects to our server
-        passthru_params = {
-            "customer_id": customer_data.get('id', ''),
-            "customer_name": customer_data.get('name', 'Unknown'),
-            "loan_id": customer_data.get('loan_id', ''),
-            "amount": customer_data.get('amount', ''),
-            "due_date": customer_data.get('due_date', ''),
-            "language_code": customer_data.get('language_code', 'hi-IN'),
-            "state": customer_data.get('state', ''),
-            "temp_call_id": temp_call_id
-        }
-        
-        # Encode parameters for URL
-        from urllib.parse import urlencode
-        passthru_url = f"{base_url}/passthru-handler?" + urlencode(passthru_params)
-        
-        print(f"🔗 Pass-Through URL: {passthru_url}")
-        print(f"📞 Calling customer: {customer_data.get('name')} at {customer_number}")
-
-        # Call Exotel API
+        # The base URL for API calls
         url = f"https://api.exotel.com/v1/Accounts/{self.exotel_sid}/Calls/connect.json"
+        
+        # The URL for the ExoML flow that Exotel will execute when the call connects.
+        # This is NOT our server's URL, but Exotel's URL for our specific application flow.
+        flow_url = f"http://my.exotel.com/{self.exotel_sid}/exoml/start_voice/{self.exotel_flow_app_id}"
 
-        # This payload initiates a call to the customer and connects them to your pass-through URL
+        # We pass all customer data in the 'CustomField'. 
+        # The Passthru applet within the ExoML flow will send this data back to our /passthru-handler.
+        custom_field_data = {k: str(v) for k, v in customer_data.items()}
+        custom_field_str = "|".join([f"{key}={value}" for key, value in custom_field_data.items()])
+
         payload = {
-            "From": customer_number,
-            "Url": passthru_url,  # Use pass-through URL instead of Applet
-            "CallerId": self.exotel_virtual_number,
-            "CallType": "trans",
-            "TimeLimit": "3600",
-            "TimeOut": "30",
-            "StatusCallback": f"{base_url}/api/exotel-webhook"
+            'From': self.exotel_virtual_number,
+            'To': to_number,
+            'CallerId': self.exotel_virtual_number,
+            'Url': flow_url,  # <-- This points to the Exotel Flow
+            'CallType': 'trans',
+            'TimeLimit': '3600',
+            'TimeOut': '30',
+            'CustomField': custom_field_str, # <-- All data is packed here
+            'StatusCallback': f"{os.getenv('BASE_URL', 'http://localhost:8000')}/exotel-webhook"
         }
         
-        print(f"📞 Exotel API Payload: {payload}")
-        
+        print(f"📞 Triggering Exotel call to {to_number} with Flow URL: {flow_url}")
+        print(f"📦 CustomField Payload: {custom_field_str}")
+        print(f"🔧 Debug - API URL: {url}")
+        print(f"🔧 Debug - Auth: {self.exotel_api_key[:10]}...{self.exotel_api_key[-10:]} / {self.exotel_token[:10]}...{self.exotel_token[-10:]}")
+        print(f"🔧 Debug - Payload: {json.dumps(payload, indent=2)}")
+
         try:
             async with httpx.AsyncClient(auth=(self.exotel_api_key, self.exotel_token)) as client:
-                response = await client.post(url, data=payload, timeout=30.0)
-                
-                if response.status_code == 200:
-                    response_data = response.json()
-                    call_sid = response_data.get('Call', {}).get('Sid')
-                    
-                    if call_sid:
-                        print(f"✅ Exotel call initiated: CallSid={call_sid}")
-                        return {
-                            'success': True,
-                            'call_sid': call_sid,
-                            'response': response_data
-                        }
-                    else:
-                        print(f"❌ No CallSid in response: {response_data}")
-                        return {
-                            'success': False,
-                            'error': 'No CallSid in response',
-                            'response': response_data
-                        }
-                else:
-                    print(f"❌ Exotel API error: HTTP {response.status_code}: {response.text}")
-                    return {
-                        'success': False,
-                        'error': f'HTTP {response.status_code}: {response.text}'
-                    }
-                    
+                response = await client.post(url, data=payload)
+            
+            if response.status_code == 200:
+                response_data = response.json()
+                call_sid = response_data.get('Call', {}).get('Sid')
+                print(f"✅ Exotel call triggered successfully. CallSid: {call_sid}")
+                return {'success': True, 'call_sid': call_sid, 'response': response_data}
+            else:
+                error_message = f"Exotel API Error: {response.status_code} - {response.text}"
+                print(f"❌ Failed to trigger Exotel call. {error_message}")
+                return {'success': False, 'error': error_message}
         except Exception as e:
-            print(f"❌ Exception calling Exotel API: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
-    
+            error_message = str(e)
+            print(f"❌ Exception during Exotel call trigger: {error_message}")
+            return {'success': False, 'error': error_message}
+
     async def _trigger_agent_transfer(self, customer_number: str, agent_number: str) -> Dict[str, Any]:
         """Trigger agent transfer call"""
         url = f"https://api.exotel.com/v1/Accounts/{self.exotel_sid}/Calls/connect.json"

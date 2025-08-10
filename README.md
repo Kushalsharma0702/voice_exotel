@@ -213,28 +213,78 @@ The script will:
 - **Notifications**: `ws_notification:{id}`
 - **Temporary Data**: `temp:{key}`
 
-## 🔌 API Endpoints
+## 🔌 API Endpoints & Key Functions
 
-### File Management
-- `POST /api/upload-customers` - Upload customer data
-- `GET /api/customers` - Get customer list
+This section details the primary API endpoints and the core functions that drive the application.
 
-### Call Management
-- `POST /api/trigger-call` - Trigger single call
-- `POST /api/trigger-bulk-calls` - Trigger multiple calls
-- `POST /api/transfer-to-agent` - Transfer call to agent
-- `GET /api/call-status/{call_sid}` - Get call status
+### API Endpoints
 
-### Dashboard
-- `GET /api/dashboard-data` - Get dashboard statistics
-- `POST /api/exotel-webhook` - Exotel webhook handler
+-   **`GET /`**: Serves the main enhanced HTML dashboard (`static/enhanced_dashboard.html`).
+-   **`GET /original`**: Serves the original, simpler `index.html` dashboard.
+-   **`POST /api/upload-customers`**:
+    -   **Description**: Upload a CSV or Excel file containing customer data. The file is processed, and customer records are created in the database.
+    -   **Body**: `multipart/form-data` with the file.
+    -   **Returns**: A summary of the upload process, including total records, successes, and failures.
+-   **`POST /api/trigger-call`**:
+    -   **Description**: Triggers a single outbound call to a specific customer.
+    -   **Body**: JSON with `{"customer_id": "..."}`.
+    -   **Returns**: Success or failure status of the call trigger.
+-   **`POST /api/trigger-bulk-calls`**:
+    -   **Description**: Triggers multiple calls in parallel based on a list of customer IDs.
+    -   **Body**: JSON with `{"customer_ids": ["...", "..."]}`.
+    -   **Returns**: A summary of the bulk call operation.
+-   **`GET /passthru-handler`**:
+    -   **Description**: **(Internal Endpoint for Exotel)**. This is hit by the Exotel Passthru applet at the beginning of a call. It's responsible for receiving call metadata, caching it in Redis, and updating the database. It must respond with a plain text "OK" to allow the Exotel flow to continue.
+    -   **Query Parameters**: Sent by Exotel, including `CallSid` and `CustomField`.
+-   **`POST /exotel-webhook`**:
+    -   **Description**: Receives status updates for calls from Exotel (e.g., "ringing", "answered", "completed").
+    -   **Body**: JSON payload from Exotel.
+-   **`GET /api/dashboard-data`**:
+    -   **Description**: Fetches real-time statistics and data for the dashboard.
+-   **`WEBSOCKET /ws/dashboard`**:
+    -   **Description**: A WebSocket for real-time communication with the dashboard, pushing status updates and logs.
+-   **`WEBSOCKET /ws/voicebot/{session_id}`**:
+    -   **Description**: The main WebSocket endpoint for the voicebot interaction, where audio is streamed and received. The `{session_id}` is the `CallSid` from Exotel.
 
-### WebSocket Events
-- `connection_established` - Session created
-- `file_processed` - File upload completed
-- `call_triggered` - Call initiated
-- `status_update` - Call status changed
-- `agent_transfer_result` - Agent transfer completed
+### Key Functions & The Call Flow
+
+The main logic orchestrates a seamless flow from triggering a call to handling the real-time voice interaction.
+
+1.  **`call_service.trigger_single_call(customer_id)`** (`services/call_management.py`):
+    -   This is the starting point. It fetches customer details from the database.
+    -   It creates a temporary call ID (`temp_call_id`) and stores the customer data in Redis against this temporary ID.
+    -   It then calls `_trigger_exotel_call`.
+
+2.  **`call_service._trigger_exotel_call(...)`** (`services/call_management.py`):
+    -   This function makes the actual API request to Exotel.
+    -   **Crucially, it sets the `Url` parameter to the Exotel Flow URL** (e.g., `http://my.exotel.com/.../start_voice/...`). This tells Exotel to execute your predefined call flow.
+    -   It packs all the customer data (including the `temp_call_id`) into the `CustomField` parameter as a pipe-separated string.
+
+3.  **Exotel's Server**:
+    -   Receives the API call.
+    -   Dials the customer.
+    -   When the customer answers, Exotel starts executing the ExoML flow defined at the `Url` you provided.
+
+4.  **ExoML Flow (on Exotel's platform)**:
+    -   Your flow should have a **Passthru** applet as one of the first steps.
+    -   This Passthru applet is configured to make a GET request to your `/passthru-handler` endpoint. It automatically forwards the `CallSid` and the `CustomField` data you originally sent.
+
+5.  **`handle_passthru(request)`** (`main.py`):
+    -   Your FastAPI server receives the request from the Passthru applet.
+    -   It extracts the official `CallSid` and the `CustomField` data.
+    -   It uses the `temp_call_id` from the `CustomField` to find the session data in Redis and links it to the new, official `CallSid`.
+    -   It logs the call as `INITIATED` in the database.
+    -   It immediately returns a plain text **"OK"**.
+
+6.  **ExoML Flow Continues**:
+    -   After receiving "OK", the Exotel flow continues to the next applet, which should be the **"Stream" or "Voicebot"** applet.
+    -   This applet connects to your WebSocket endpoint: `/ws/voicebot/{CallSid}`.
+
+7.  **`websocket_voicebot_endpoint(websocket, session_id)`** (`main.py`):
+    -   The voicebot logic now takes over. It uses the `session_id` (which is the `CallSid`) to retrieve all the customer data from Redis that was cached by the `/passthru-handler`.
+    -   The full, multi-lingual conversation with TTS and ASR happens here.
+
+This entire sequence ensures that by the time the voicebot WebSocket connects, all necessary customer and session data is already in place, ready to be used.
 
 ## 🔄 Call Flow
 
@@ -414,6 +464,31 @@ For support and questions:
 - Check the troubleshooting section
 - Review the API documentation
 - Contact the development team
+
+## 🧹 Database Management Scripts
+
+### Data Wipe Scripts
+**⚠️ Use only in development environments!**
+
+```bash
+# Safe wipe with confirmations
+python wipe_data.py
+
+# Quick wipe for rapid testing  
+python quick_wipe.py
+
+# Backup then wipe
+python backup_and_wipe.py
+```
+
+**Features:**
+- Complete PostgreSQL data deletion
+- Redis cache clearing
+- Multiple safety confirmations
+- Backup creation before wiping
+- Cross-platform support (Linux/Mac/Windows)
+
+📖 **See [WIPE_SCRIPTS_README.md](WIPE_SCRIPTS_README.md) for detailed usage**
 
 ## 🔄 Updates & Changelog
 

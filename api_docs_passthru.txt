@@ -1,0 +1,287 @@
+Logo
+Exotel Support Center
+Welcome
+Login
+HomeSolutionsForums
+How can we help you today?
+Enter your search term here...
+
+Search
+ 
+Solution home API Documentation API Docs
+Working with Passthru Applet Print
+Modified on: Tue, 24 Jun, 2025 at 3:37 PM
+
+Video:
+
+
+
+
+
+
+Using the Passthru applet in the call flow you can get Exotel to talk to your Application URL and pass on details about the call as and when it happens. Your application can now process this information and decide which path (success/failure) the flow should take next. This applet helps to dynamically control the flow as well as store the call details in your CRM system or other applications.
+
+
+
+
+
+The Passthru applet passes the call details to the URL configured. It makes a GET request to the URL with the call details as URL-encoded HTTP query parameters.
+
+ 
+
+Passthru can be used in 2 modes (by toggling the checkbox to 'Make Passthru Async'):
+
+Sync: Exotel will immediately pass the call details synchronously during the call flow execution. In this case, it is possible only to make a binary decision with Passthru. For example, You can return back a "200 OK" for choice A and "302 Found" for Choice B. Read more about HTTP response codes here. Please note, that the person on call will have to wait for the next action to be executed until your URL responds back.
+
+
+Async: Exotel will asynchronously pass the call details without interrupting the call flow execution. Use this option if you don’t want to dynamically change flow execution i.e. select the next applet based on Passthru response. This will ensure the person on call doesn’t wait for the time period it takes for Passthru to be executed i.e. your URL to respond back.
+
+
+
+Short video:
+
+
+
+
+
+
+
+
+The following are the query parameters of the GET request. Note that only some of this list may be passed to your application - depending on what stage of the flow you have placed the pass-through applet.
+
+
+Query Parameters:
+
+
+Parameter Name
+
+Description
+
+CallSid
+
+Unique identifier of the call
+
+CallFrom
+
+In case of an outgoing call, it’ll be set to the number from which the call is made. In case of an incoming call, it’ll be set to the number from which the call is received
+
+CallTo
+
+In case of an outgoing call, it’ll be set to the number being dialed out. In case of an incoming call, it’ll be set to the number where the call landed.
+
+CallStatus	
+The status of the call depends on what stage it is at. Possible values: 'queued', 'ringing', 'in-progress', 'completed', 'busy', 'failed', 'no-answer', 'canceled'
+
+Direction
+
+The direction of the call. Possible values: ‘incoming’ or ‘outbound dial
+
+Created
+
+Timestamp when the call is created
+
+DialCallDuration
+
+Value in seconds from the time the call is triggered to the second leg of the call till it is over (including conversation time). This value can be set to zero depending on the previous applet and if there’s no second leg in the call flow.
+
+StartTime
+
+Timestamp when the call is started
+
+EndTime
+
+1970-01-01 05:30:00 // Unix time (also known as POSIX time or epoch time)
+
+Note that this would be a constant value and you may instead trigger our Call details API a few minutes after the call has been completed to get accurate information
+
+CallType
+
+
+Scenario
+
+Value
+
+IVR only, no connect applet
+
+call-attempt
+
+Call conversation happened
+
+completed
+
+The client hung up during connect applet
+
+client-hangup
+
+Connect applet, no agent picked up
+
+incomplete
+
+Went to voicemail applet
+
+voicemail
+
+DialWhomNumber
+
+Displays the number of the agent who was dialed to last
+
+From
+
+In case of an incoming call, it is the number of the caller. In the case of an outgoing call, it is the number of the first leg of the call.
+
+To
+
+ In case of an incoming call, it is the ExoPhone on which the call landed. In case of an outgoing call, it is the number to which the call was made.
+
+CurrentTime
+
+Current server time (format : yyyy-mm-dd hh:mm:ss)
+
+ 
+
+*These parameters will be passed if certain conditions are met as described below:
+
+Parameter Name                
+
+Description
+
+DialCallStatus
+
+This will denote what happened with the second leg of the call if the previous applet was “connect”.
+
+Possible values: 'completed', 'busy', 'no-answer', 'failed', 'canceled'
+
+Legs
+
+An array that will denote detailed information about each leg attempt if the previous applet was “connect”.
+
+
+
+Sample:
+
+Legs[0][CauseCode]=NORMAL_CLEARING
+
+Legs[0][Cause]=16
+
+Legs[0][Type]=single
+
+Legs[0][OnCallDuration]=21
+
+Legs[0][Number]=07200498123
+
+
+Meaning:
+
+Legs[i]: i denotes the index of the attempt in the Connect applet. If there are multiple numbers attempted, the array’s length will be equal to the total attempts.
+
+CauseCode: Cause code enum of the call as derived from the ISDN cause code returned by the carriers. A list of CauseCode can be found here
+
+Cause: Numeric representation of the CauseCode. A list of Causes can be found here
+
+Type: single or parallel
+
+OnCallDuration: Time spent by the leg on call. This value could be 0 if there was no conversation with the attempted leg.
+
+Number: Phone number of the attempted leg
+
+digits
+
+‘digits’ will be passed if there was a 'Gather' or ‘IVR’ applet before this applet and will be equal to the input digits that were entered. NOTE: This parameter comes with a double quote (") before and after the number. You'll have to trim() this parameter for double quotes (") to get the actual digits.
+
+CustomField
+
+If the call was initiated via API, the value that was passed in CustomField in the API call will be set here.
+
+RecordingUrl
+
+This will be populated if the previous applet was "Connect" or "Voicemail". It will contain the URL of the conversation in the Connect Applet (if enabled) or voicemail recording. There could be a delay before the recording can be accessed depending on the length of the recording file.
+
+OutgoingPhoneNumber
+
+
+This will be populated if the previous applet was “connect”. It indicates which ExoPhone (Virtual Number) was used to dial out in the Connect Applet.
+
+
+
+
+Deprecated parameters:
+
+The following parameters have been deprecated and are no longer supported. Some of these values might be passed inadvertently and applications should not rely on them anymore.
+
+
+
+RecordingAvailableBy
+
+ForwardedFrom
+
+ProcessStatus
+
+tenant_id
+
+flow_id
+
+
+
+
+To know the response time or time taken by the pass-thru applet please refer here
+
+
+
+Samples Responses for different scenarios.
+
+1) Sample Response for a Completed call where the previous applet is a Connect Applet with Recording URL:
+
+
+
+
+
+
+
+2) Sample Response for a Completed call where previous applet is a Gather/IVR Applet:
+
+
+
+
+3) Sample Response for a Completed call where the call was initiated via an API,  with the value that was passed in CustomField of the API request. 
+
+
+
+
+
+
+
+
+ You can also check this article and see if Passthru is slowing your call flow Is Passthru slowing my call flow?
+
+
+
+Note: The response you get from Passthru cannot be customised. However, you can add a Custom field only via the
+
+Outgoing call to connect number to a call flow API.
+
+
+
+Looking to streaming metadata using Passthru? Learn how to receive stream metadata post-call, link here
+
+ 
+
+If you have any questions or concerns, please connect with us using the chat widget on your Exotel Dashboard or Whatsapp us on 08088919888
+
+
+
+Did you find it helpful? Yes No
+
+Preview
+Related Articles
+Quick Guide to Get Started with Exotel Streaming Services
+Working with Passthru Applet for AgentStream (Beta)
+Updated Extension Guide: Working with the Stream and Voicebot Applet (Beta)
+Working with DTMF
+Programmable Connect: Working with Connect Applet (Dynamic URL)
+Working with the Stream and Voicebot Applet
+How do I identify exactly at which step the user hangs up?
+Exotel - LeadSquared Mobile app integration
+How to use NEW Auto-Dialer(Outbound Dialer) Campaigns
+What kind of flows can I build using Exotel
+Home Solutions Forums
+Article views count
