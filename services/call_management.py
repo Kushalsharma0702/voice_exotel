@@ -638,6 +638,9 @@ class CallManagementService:
     
     async def _trigger_exotel_call(self, to_number: str, temp_call_id: str, customer_data: Dict[str, Any]) -> Dict[str, Any]:
         """Internal method to trigger Exotel call and connect it to the ExoML flow."""
+        print(f"🎯 [CHECKPOINT] Starting Exotel call trigger process")
+        print(f"🎯 [CHECKPOINT] Target number: {to_number}")
+        print(f"🎯 [CHECKPOINT] Temp call ID: {temp_call_id}")
         
         # The base URL for API calls
         url = f"https://api.exotel.com/v1/Accounts/{self.exotel_sid}/Calls/connect.json"
@@ -646,45 +649,67 @@ class CallManagementService:
         # This is NOT our server's URL, but Exotel's URL for our specific application flow.
         flow_url = f"http://my.exotel.com/{self.exotel_sid}/exoml/start_voice/{self.exotel_flow_app_id}"
 
+        print(f"🎯 [CHECKPOINT] API URL: {url}")
+        print(f"🎯 [CHECKPOINT] Flow URL: {flow_url}")
+
+        # Add temp_call_id to customer data for tracking
+        customer_data['temp_call_id'] = temp_call_id
+
         # We pass all customer data in the 'CustomField'. 
         # The Passthru applet within the ExoML flow will send this data back to our /passthru-handler.
         custom_field_data = {k: str(v) for k, v in customer_data.items()}
         custom_field_str = "|".join([f"{key}={value}" for key, value in custom_field_data.items()])
 
+        # CRITICAL FIX: According to Exotel API docs for flow calls:
+        # - From: Customer number (who gets called first)
+        # - CallerId: Your ExoPhone number  
+        # - Url: Flow URL
+        # The previous payload was wrong - it had From=ExoPhone and To=Customer
         payload = {
-            'From': self.exotel_virtual_number,
-            'To': to_number,
-            'CallerId': self.exotel_virtual_number,
-            'Url': flow_url,  # <-- This points to the Exotel Flow
+            'From': to_number,  # 🔥 FIXED: Customer number gets called first
+            'CallerId': self.exotel_virtual_number,  # 🔥 FIXED: ExoPhone as caller ID
+            'Url': flow_url,  # Flow URL remains the same
             'CallType': 'trans',
             'TimeLimit': '3600',
             'TimeOut': '30',
-            'CustomField': custom_field_str, # <-- All data is packed here
+            'CustomField': custom_field_str,
             'StatusCallback': f"{os.getenv('BASE_URL', 'http://localhost:8000')}/exotel-webhook"
         }
         
-        print(f"📞 Triggering Exotel call to {to_number} with Flow URL: {flow_url}")
-        print(f"📦 CustomField Payload: {custom_field_str}")
-        print(f"🔧 Debug - API URL: {url}")
-        print(f"🔧 Debug - Auth: {self.exotel_api_key[:10]}...{self.exotel_api_key[-10:]} / {self.exotel_token[:10]}...{self.exotel_token[-10:]}")
-        print(f"🔧 Debug - Payload: {json.dumps(payload, indent=2)}")
+        print(f"🎯 [CHECKPOINT] Payload validation:")
+        print(f"   • From (Customer): {payload['From']}")
+        print(f"   • CallerId (ExoPhone): {payload['CallerId']}")
+        print(f"   • Flow URL: {payload['Url']}")
+        print(f"   • CustomField: {custom_field_str[:100]}...")
+        
+        print(f"📞 [CHECKPOINT] Triggering Exotel call to customer {to_number}")
+        print(f"📦 [CHECKPOINT] CustomField Payload: {custom_field_str}")
+        print(f"🔧 [CHECKPOINT] Debug - API URL: {url}")
+        print(f"🔧 [CHECKPOINT] Debug - Auth: {self.exotel_api_key[:10]}...{self.exotel_api_key[-10:]} / {self.exotel_token[:10]}...{self.exotel_token[-10:]}")
+        print(f"🔧 [CHECKPOINT] Debug - Full Payload: {json.dumps(payload, indent=2)}")
 
         try:
+            print(f"🎯 [CHECKPOINT] Making HTTP request to Exotel API...")
             async with httpx.AsyncClient(auth=(self.exotel_api_key, self.exotel_token)) as client:
                 response = await client.post(url, data=payload)
+            
+            print(f"🎯 [CHECKPOINT] Exotel API response received")
+            print(f"🎯 [CHECKPOINT] Status Code: {response.status_code}")
+            print(f"🎯 [CHECKPOINT] Response Text: {response.text[:500]}...")
             
             if response.status_code == 200:
                 response_data = response.json()
                 call_sid = response_data.get('Call', {}).get('Sid')
-                print(f"✅ Exotel call triggered successfully. CallSid: {call_sid}")
+                print(f"✅ [CHECKPOINT] Exotel call triggered successfully. CallSid: {call_sid}")
+                print(f"✅ [CHECKPOINT] Full response: {json.dumps(response_data, indent=2)}")
                 return {'success': True, 'call_sid': call_sid, 'response': response_data}
             else:
                 error_message = f"Exotel API Error: {response.status_code} - {response.text}"
-                print(f"❌ Failed to trigger Exotel call. {error_message}")
+                print(f"❌ [CHECKPOINT] Failed to trigger Exotel call. {error_message}")
                 return {'success': False, 'error': error_message}
         except Exception as e:
             error_message = str(e)
-            print(f"❌ Exception during Exotel call trigger: {error_message}")
+            print(f"❌ [CHECKPOINT] Exception during Exotel call trigger: {error_message}")
             return {'success': False, 'error': error_message}
 
     async def _trigger_agent_transfer(self, customer_number: str, agent_number: str) -> Dict[str, Any]:

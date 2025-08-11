@@ -200,6 +200,31 @@ class RedisSessionManager:
             return calls
         return []
     
+    def link_session_to_sid(self, temp_call_id: str, official_call_sid: str):
+        """Link a temporary call session to the official Exotel CallSid"""
+        # Get the temporary call session data
+        temp_data = self.get_temp_data(temp_call_id)
+        if temp_data:
+            # Create a new session with the official CallSid
+            self.create_call_session(official_call_sid, temp_data.get('customer_data', {}), temp_data.get('websocket_id'))
+            
+            # Transfer any conversation history
+            if 'conversation_history' in temp_data:
+                session_data = self.get_call_session(official_call_sid)
+                if session_data:
+                    session_data['conversation_history'] = temp_data['conversation_history']
+                    key = f"call_session:{official_call_sid}"
+                    self.redis_client.setex(key, self.call_session_ttl, json.dumps(session_data))
+            
+            # Clean up temporary session
+            self.remove_temp_data(temp_call_id)
+            
+            print(f"✅ [Redis] Linked temp session {temp_call_id} to CallSid {official_call_sid}")
+            return True
+        else:
+            print(f"⚠️ [Redis] No temp session found for {temp_call_id}")
+            return False
+    
     # Notification System
     def notify_websocket(self, websocket_id: str, message: Dict[str, Any]):
         """Store notification for WebSocket (to be picked up by WebSocket handler)"""
