@@ -34,6 +34,7 @@ from database.schemas import (CallStatus, Customer,
 from services.call_management import call_service
 from utils import bedrock_client
 from utils.agent_transfer import trigger_exotel_agent_transfer
+from utils.logger import setup_application_logging, logger
 from utils.handler_asr import SarvamHandler
 from utils.redis_session import (init_redis, redis_manager,
                                  generate_websocket_session_id)
@@ -43,26 +44,30 @@ from utils.redis_session import (init_redis, redis_manager,
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print("🚀 Starting Voice Assistant Application...")
+    # Initialize logging system first
+    setup_application_logging()
+    logger.app.info("🚀 Starting Voice Assistant Application...")
     
     # Initialize database
     if init_database():
-        print("✅ Database initialized successfully")
+        logger.app.info("✅ Database initialized successfully")
+        logger.database.info("Database connection established")
     else:
-        print("❌ Database initialization failed")
+        logger.error.error("❌ Database initialization failed")
+        logger.database.error("Failed to establish database connection")
     
     # Initialize Redis
     if init_redis():
-        print("✅ Redis initialized successfully")
+        logger.app.info("✅ Redis initialized successfully")
     else:
-        print("❌ Redis initialization failed - running without session management")
+        logger.app.warning("❌ Redis initialization failed - running without session management")
     
-    print("🎉 Application startup complete!")
+    logger.app.info("🎉 Application startup complete!")
     
     yield
     
     # Shutdown
-    print("🛑 Shutting down Voice Assistant Application...")
+    logger.app.info("🛑 Shutting down Voice Assistant Application...")
 
 app = FastAPI(
     title="Voice Assistant Call Management System",
@@ -158,30 +163,30 @@ GOODBYE_TEMPLATE = {
 # --- TTS & Audio Helper Functions ---
 
 async def play_transfer_to_agent(websocket, customer_number: str):
-    print("play_transfer_to_agent")
+    logger.tts.info("play_transfer_to_agent")
     transfer_text = (
         "Please wait, we are transferring the call to an agent."
     )
-    print("[Sarvam TTS] 🔁 Converting agent transfer prompt")
+    logger.tts.info("🔁 Converting agent transfer prompt")
     # Using 'en-IN' for transfer prompt for consistency, but could be `call_detected_lang`
     audio_bytes = await sarvam_handler.synthesize_tts("Please wait, we are transferring the call to an agent.", "en-IN")
-    print("[Sarvam TTS] 📢 Agent transfer audio generated")
+    logger.tts.info("📢 Agent transfer audio generated")
 
     await stream_audio_to_websocket(websocket, audio_bytes)
 
-    print("[Exotel] 📞 Initiating agent call transfer")
+    logger.websocket.info("📞 Initiating agent call transfer")
     # The AGENT_NUMBER should be loaded from environment variables
     agent_number = os.getenv("AGENT_PHONE_NUMBER")
     if customer_number and agent_number:
         await trigger_exotel_agent_transfer(customer_number, agent_number)
     else:
-        print("[ERROR] Could not initiate agent transfer. Missing customer_number or agent_number.")
+        logger.error.error("Could not initiate agent transfer. Missing customer_number or agent_number.")
 
 
 async def stream_audio_to_websocket(websocket, audio_bytes):
     CHUNK_SIZE = 8000  # Send 1 second of audio at a time
     if not audio_bytes:
-        print("[stream_audio_to_websocket] ❌ No audio bytes to stream.")
+        logger.error.warning("No audio bytes to stream.")
         return
     for i in range(0, len(audio_bytes), CHUNK_SIZE):
         chunk = audio_bytes[i:i + CHUNK_SIZE]
@@ -197,16 +202,19 @@ async def stream_audio_to_websocket(websocket, audio_bytes):
 
 async def greeting_template_play(websocket, customer_info, lang: str):
     """Plays the personalized greeting in the detected language."""
-    print("greeting_template_play")
+    logger.tts.info("greeting_template_play")
     greeting = GREETING_TEMPLATE.get(lang, GREETING_TEMPLATE["en-IN"]).format(name=customer_info.get('name', 'there'))
-    print(f"[Sarvam TTS] 🔁 Converting personalized greeting: {greeting}")
-    audio_bytes = await sarvam_handler.synthesize_tts(greeting, lang)
+    logger.tts.info(f"🔁 Converting personalized greeting: {greeting}")
+    
+    # Use direct TTS since greeting templates are already in target language
+    audio_bytes = await sarvam_handler.synthesize_tts_direct(greeting, lang)
     await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def play_did_not_hear_response(websocket, lang: str):
     """Plays a prompt when the initial response is not heard."""
     prompt_text = "I'm sorry, I didn't hear your response. This call is regarding your loan account. If this is a convenient time to talk, please say 'yes'."
-    print(f"[Sarvam TTS] 🔁 Converting 'didn't hear' prompt: {prompt_text}")
+    logger.tts.info(f"🔁 Converting 'didn't hear' prompt: {prompt_text}")
+    # Use regular TTS with translation since this is English text
     audio_bytes = await sarvam_handler.synthesize_tts(prompt_text, lang)
     await stream_audio_to_websocket(websocket, audio_bytes)
 
@@ -219,29 +227,29 @@ async def play_emi_details_part1(websocket, customer_info, lang: str):
         amount=customer_info.get('amount', 'a certain amount'),
         due_date=customer_info.get('due_date', 'a recent date')
     )
-    print(f"[Sarvam TTS] 🔁 Converting EMI part 1: {prompt_text}")
-    audio_bytes = await sarvam_handler.synthesize_tts(prompt_text, lang)
+    logger.tts.info(f"🔁 Converting EMI part 1: {prompt_text}")
+    audio_bytes = await sarvam_handler.synthesize_tts_direct(prompt_text, lang)
     await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def play_emi_details_part2(websocket, customer_info, lang: str):
     """Plays the second part of EMI details."""
     prompt_text = EMI_DETAILS_PART2_TEMPLATE.get(lang, EMI_DETAILS_PART2_TEMPLATE["en-IN"])
-    print(f"[Sarvam TTS] 🔁 Converting EMI part 2: {prompt_text}")
-    audio_bytes = await sarvam_handler.synthesize_tts(prompt_text, lang)
+    logger.tts.info(f"🔁 Converting EMI part 2: {prompt_text}")
+    audio_bytes = await sarvam_handler.synthesize_tts_direct(prompt_text, lang)
     await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def play_agent_connect_question(websocket, lang: str):
     """Asks the user if they want to connect to a live agent."""
     prompt_text = AGENT_CONNECT_TEMPLATE.get(lang, AGENT_CONNECT_TEMPLATE["en-IN"])
-    print(f"[Sarvam TTS] 🔁 Converting agent connect question: {prompt_text}")
-    audio_bytes = await sarvam_handler.synthesize_tts(prompt_text, lang)
+    logger.tts.info(f"🔁 Converting agent connect question: {prompt_text}")
+    audio_bytes = await sarvam_handler.synthesize_tts_direct(prompt_text, lang)
     await stream_audio_to_websocket(websocket, audio_bytes)
 
 async def play_goodbye_after_decline(websocket, lang: str):
     """Plays a goodbye message if the user declines agent connection."""
     prompt_text = GOODBYE_TEMPLATE.get(lang, GOODBYE_TEMPLATE["en-IN"])
-    print(f"[Sarvam TTS] 🔁 Converting goodbye after decline: {prompt_text}")
-    audio_bytes = await sarvam_handler.synthesize_tts(prompt_text, lang)
+    logger.tts.info(f"🔁 Converting goodbye after decline: {prompt_text}")
+    audio_bytes = await sarvam_handler.synthesize_tts_direct(prompt_text, lang)
     await stream_audio_to_websocket(websocket, audio_bytes)
 
 # --- Language and Intent Detection ---
@@ -276,7 +284,7 @@ def detect_language(text):
 
 def detect_intent_with_claude(transcript: str, lang: str) -> str:
     """Detects intent using the Claude model via the bedrock_client."""
-    print(f"[Claude Intent] Getting intent for: '{transcript}'")
+    logger.websocket.info(f"Getting intent for: '{transcript}'")
     try:
         # The bedrock_client expects a chat history list of dicts
         chat_history = [{"role": "user", "content": transcript}]
@@ -285,10 +293,10 @@ def detect_intent_with_claude(transcript: str, lang: str) -> str:
         # The response from the bedrock client is a dictionary, we need to extract the intent.
         # Based on the likely structure, it might be under a key like 'intent'.
         intent = response.get("intent", "unknown")
-        print(f"[Claude Intent] Detected intent: {intent}")
+        logger.websocket.info(f"Detected intent: {intent}")
         return intent
     except Exception as e:
-        print(f"[Claude Intent] ❌ Error detecting intent with Claude: {e}")
+        logger.websocket.error(f"❌ Error detecting intent with Claude: {e}")
         return "unknown"
 
 def detect_intent_fur(text: str, lang: str) -> str:
@@ -303,6 +311,52 @@ def detect_intent(text):
     if any(word in text for word in ["no", "not now", "later", "nah", "nahi", "இல்லை", "காது", "ನಹಿ"]): return "negative"
     if any(word in text for word in ["what", "who", "why", "repeat", "pardon"]): return "confused"
     return "unknown"
+
+# --- State to Language Mapping ---
+STATE_TO_LANGUAGE = {
+    'andhra pradesh': 'te-IN',
+    'arunachal pradesh': 'hi-IN',
+    'assam': 'hi-IN',
+    'bihar': 'hi-IN',
+    'chhattisgarh': 'hi-IN',
+    'goa': 'hi-IN',
+    'gujarat': 'gu-IN',
+    'haryana': 'hi-IN',
+    'himachal pradesh': 'hi-IN',
+    'jharkhand': 'hi-IN',
+    'karnataka': 'kn-IN',
+    'kerala': 'ml-IN',
+    'madhya pradesh': 'hi-IN',
+    'maharashtra': 'mr-IN',
+    'manipur': 'hi-IN',
+    'meghalaya': 'hi-IN',
+    'mizoram': 'hi-IN',
+    'nagaland': 'hi-IN',
+    'odisha': 'or-IN',
+    'punjab': 'pa-IN',
+    'rajasthan': 'hi-IN',
+    'sikkim': 'hi-IN',
+    'tamil nadu': 'ta-IN',
+    'telangana': 'te-IN',
+    'tripura': 'hi-IN',
+    'uttar pradesh': 'hi-IN',
+    'uttarakhand': 'hi-IN',
+    'west bengal': 'bn-IN',
+    'delhi': 'hi-IN',
+    'puducherry': 'ta-IN',
+    'chandigarh': 'hi-IN',
+    'andaman and nicobar islands': 'hi-IN',
+    'dadra and nagar haveli and daman and diu': 'hi-IN',
+    'jammu and kashmir': 'hi-IN',
+    'ladakh': 'hi-IN',
+    'lakshadweep': 'ml-IN',
+}
+
+def get_initial_language_from_state(state: str) -> str:
+    """Get the initial language based on customer's state."""
+    if not state:
+        return 'en-IN'
+    return STATE_TO_LANGUAGE.get(state.strip().lower(), 'en-IN')
 
 
 # --- Static Files and Templates ---
@@ -331,16 +385,16 @@ async def generate_websocket_url(request: Request):
     Generates the correct WebSocket URL for Exotel flow to connect to.
     This endpoint is called by Exotel flow to get the WebSocket URL dynamically.
     """
-    print("🔗 [CHECKPOINT] /ws-url endpoint hit")
+    logger.websocket.info("🔗 /ws-url endpoint hit")
     
     params = request.query_params
     call_sid = params.get("CallSid")
     custom_field = params.get("CustomField")
     from_number = params.get("From")
     
-    print(f"🔗 [CHECKPOINT] WebSocket URL request - CallSid: {call_sid}")
-    print(f"🔗 [CHECKPOINT] WebSocket URL request - CustomField: {custom_field}")
-    print(f"🔗 [CHECKPOINT] WebSocket URL request - From: {from_number}")
+    logger.websocket.info(f"🔗 WebSocket URL request - CallSid: {call_sid}")
+    logger.websocket.info(f"🔗 WebSocket URL request - CustomField: {custom_field}")
+    logger.websocket.info(f"🔗 WebSocket URL request - From: {from_number}")
     
     # Parse temp_call_id from CustomField
     temp_call_id = None
@@ -352,7 +406,7 @@ async def generate_websocket_url(request: Request):
                     temp_call_id = pair.split('=', 1)[1]
                     break
         except Exception as e:
-            print(f"🔗 [ERROR] Failed to parse temp_call_id from CustomField: {e}")
+            logger.error.error(f"🔗 Failed to parse temp_call_id from CustomField: {e}")
     
     # Use CallSid as session_id if available, otherwise use temp_call_id
     session_id = call_sid or temp_call_id or generate_websocket_session_id()
@@ -377,7 +431,7 @@ async def generate_websocket_url(request: Request):
     if query_params:
         websocket_url += "?" + "&".join(query_params)
     
-    print(f"🔗 [CHECKPOINT] Generated WebSocket URL: {websocket_url}")
+    logger.websocket.info(f"🔗 Generated WebSocket URL: {websocket_url}")
     
     # Return the WebSocket URL as plain text for Exotel to use
     return websocket_url
@@ -390,19 +444,19 @@ async def handle_passthru(request: Request):
     This is a critical, lightweight endpoint that must respond quickly.
     It receives call data, caches it, and updates the DB.
     """
-    print("✅ [CHECKPOINT] /passthru-handler hit")
+    logger.websocket.info("✅ /passthru-handler hit")
     
     params = request.query_params
     call_sid = params.get("CallSid")
     custom_field = params.get("CustomField")
 
     if not call_sid:
-        print("❌ [ERROR] Passthru handler called without a CallSid.")
+        logger.error.error("❌ Passthru handler called without a CallSid.")
         # Still return OK to Exotel to not break their flow, but log the error.
         return "OK"
 
-    print(f"📞 [CHECKPOINT] Passthru: CallSid received: {call_sid}")
-    print(f"📦 [CHECKPOINT] Passthru: CustomField received: {custom_field}")
+    logger.websocket.info(f"📞 Passthru: CallSid received: {call_sid}")
+    logger.websocket.info(f"📦 Passthru: CustomField received: {custom_field}")
 
     # Parse the pipe-separated CustomField
     customer_data = {}
@@ -413,27 +467,27 @@ async def handle_passthru(request: Request):
                 if '=' in pair:
                     key, value = pair.split('=', 1)
                     customer_data[key.strip()] = value.strip()
-            print(f"📊 [CHECKPOINT] Passthru: Parsed Custom Fields: {customer_data}")
+            logger.websocket.info(f"📊 Passthru: Parsed Custom Fields: {customer_data}")
         except Exception as e:
-            print(f"❌ [ERROR] Passthru: Failed to parse CustomField: {e}")
+            logger.error.error(f"❌ Passthru: Failed to parse CustomField: {e}")
             # Log error but continue, as we might have the CallSid
     
     # Get the temporary ID to link sessions
     temp_call_id = customer_data.get("temp_call_id")
-    print(f"ℹ️ [CHECKPOINT] Passthru: temp_call_id from CustomField: {temp_call_id}")
+    logger.websocket.info(f"ℹ️ Passthru: temp_call_id from CustomField: {temp_call_id}")
 
     # --- Redis Caching ---
     # We now have the official CallSid, let's update/create the Redis session
     if temp_call_id:
-        print(f"🔄 [CHECKPOINT] Passthru: Linking session from temp_call_id: {temp_call_id} to new CallSid: {call_sid}")
+        logger.websocket.info(f"🔄 Passthru: Linking session from temp_call_id: {temp_call_id} to new CallSid: {call_sid}")
         redis_manager.link_session_to_sid(temp_call_id, call_sid)
     else:
-        print(f"📦 [CHECKPOINT] Passthru: Creating new Redis session for CallSid: {call_sid}")
+        logger.websocket.info(f"📦 Passthru: Creating new Redis session for CallSid: {call_sid}")
         redis_manager.create_call_session(call_sid, customer_data)
 
     # --- Database Update ---
     try:
-        print(f"✍️ [CHECKPOINT] Passthru: Updating database for CallSid: {call_sid}")
+        logger.database.info(f"✍️ Passthru: Updating database for CallSid: {call_sid}")
         session = db_manager.get_session()
         try:
             update_call_status(
@@ -443,14 +497,14 @@ async def handle_passthru(request: Request):
                 message=f"Call flow started - temp_call_id: {temp_call_id}"
             )
             session.commit()
-            print(f"✅ [CHECKPOINT] Passthru: Database updated successfully for CallSid: {call_sid}")
+            logger.database.info(f"✅ Passthru: Database updated successfully for CallSid: {call_sid}")
         finally:
             session.close()
     except Exception as e:
-        print(f"❌ [CRITICAL] Passthru: Database update failed for CallSid {call_sid}: {e}")
+        logger.error.error(f"❌ Passthru: Database update failed for CallSid {call_sid}: {e}")
 
     # IMPORTANT: Always return "OK" for Exotel to proceed with the call flow.
-    print("✅ [CHECKPOINT] Passthru: Responding 'OK' to Exotel.")
+    logger.websocket.info("✅ Passthru: Responding 'OK' to Exotel.")
     return "OK"
 
 # --- WebSocket Endpoint for Voicebot ---
@@ -458,13 +512,13 @@ async def handle_voicebot_websocket(websocket: WebSocket, session_id: str, temp_
     """
     Core voicebot WebSocket handling logic - extracted to be reusable.
     """
-    print(f"[WebSocket] ✅ Connected to Exotel Voicebot for session: {session_id}")
+    logger.websocket.info(f"✅ Connected to Exotel Voicebot for session: {session_id}")
 
     # Initialize variables from parameters
     if not call_sid:
         call_sid = session_id  # Use session_id as a fallback for call_sid
 
-    print(f"[WebSocket] Session params: temp_call_id={temp_call_id}, call_sid={call_sid}, phone={phone}")
+    logger.websocket.info(f"Session params: temp_call_id={temp_call_id}, call_sid={call_sid}, phone={phone}")
 
     # State variable for the conversation stage
     conversation_stage = "INITIAL_GREETING" # States: INITIAL_GREETING, WAITING_FOR_LANG_DETECT, PLAYING_PERSONALIZED_GREETING, PLAYING_EMI_PART1, PLAYING_EMI_PART2, ASKING_AGENT_CONNECT, WAITING_AGENT_RESPONSE, TRANSFERRING_TO_AGENT, GOODBYE_DECLINE
@@ -480,16 +534,16 @@ async def handle_voicebot_websocket(websocket: WebSocket, session_id: str, temp_
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
-            print(f"[WebSocket] 📨 Received message: {msg.get('event', 'unknown')}")
+            logger.log_websocket_message("Received message", msg)
 
             if msg.get("event") == "start":
-                print("[WebSocket] 🔁 Got start event")
+                logger.websocket.info("🔁 Got start event")
                 
                 # Try to get customer info from multiple sources
                 if not customer_info:
                     # 1. Try to get from Redis using temp_call_id or call_sid
                     if temp_call_id:
-                        print(f"[WebSocket] Looking up customer data by temp_call_id: {temp_call_id}")
+                        logger.database.info(f"Looking up customer data by temp_call_id: {temp_call_id}")
                         redis_data = redis_manager.get_call_session(temp_call_id)
                         if redis_data:
                             customer_info = {
@@ -639,27 +693,37 @@ async def handle_voicebot_websocket(websocket: WebSocket, session_id: str, temp_
                 
                 print(f"[WebSocket] ✅ Customer data validated: {customer_info['name']} - Loan: {customer_info['loan_id']}, Amount: ₹{customer_info['amount']}")
                 
-                # Play initial greeting immediately when WebSocket starts (working approach)
+                # Determine initial language: prioritize state-based language over CSV language
+                customer_state = customer_info.get('state', '').strip()
+                state_based_language = get_initial_language_from_state(customer_state)
+                csv_language = customer_info.get('lang', 'en-IN')
+                
+                # Use state language for initial greeting as requested
+                initial_greeting_language = state_based_language
+                logger.websocket.info(f"State: {customer_state}, State Language: {state_based_language}, CSV Language: {csv_language}")
+                logger.websocket.info(f"Using state-based language for initial greeting: {initial_greeting_language}")
+                
+                # Play initial greeting immediately when WebSocket starts
                 if conversation_stage == "INITIAL_GREETING":
-                    print(f"[WebSocket] 1. Playing initial greeting for {customer_info['name']} in {customer_info['lang']}")
+                    logger.websocket.info(f"1. Playing initial greeting for {customer_info['name']} in {initial_greeting_language} (state-based)")
                     try:
-                        # Use the working template approach
-                        await greeting_template_play(websocket, customer_info, lang=customer_info['lang'])
-                        print(f"[WebSocket] ✅ Initial greeting played successfully in {customer_info['lang']}")
+                        # Use the working template approach with state-based language
+                        await greeting_template_play(websocket, customer_info, lang=initial_greeting_language)
+                        logger.websocket.info(f"✅ Initial greeting played successfully in {initial_greeting_language}")
                         initial_greeting_played = True
                         conversation_stage = "WAITING_FOR_LANG_DETECT"
                     except Exception as e:
-                        print(f"[WebSocket] ❌ Error playing initial greeting: {e}")
-                        # Try fallback simple greeting
+                        logger.websocket.error(f"❌ Error playing initial greeting: {e}")
+                        # Try fallback simple greeting in English
                         try:
                             simple_greeting = f"Hello, this is South India Finvest Bank calling. Am I speaking with {customer_info['name']}?"
                             audio_bytes = await sarvam_handler.synthesize_tts_end(simple_greeting, "en-IN")
                             await stream_audio_to_websocket(websocket, audio_bytes)
-                            print("[WebSocket] ✅ Fallback greeting sent successfully")
+                            logger.websocket.info("✅ Fallback greeting sent successfully")
                             initial_greeting_played = True
                             conversation_stage = "WAITING_FOR_LANG_DETECT"
                         except Exception as fallback_e:
-                            print(f"[WebSocket] ❌ Error sending fallback greeting: {fallback_e}")
+                            logger.websocket.error(f"❌ Error sending fallback greeting: {fallback_e}")
                 continue
 
             if msg.get("event") == "media":
@@ -708,27 +772,42 @@ async def handle_voicebot_websocket(websocket: WebSocket, session_id: str, temp_
                         if transcript:
                             if conversation_stage == "WAITING_FOR_LANG_DETECT":
                                 call_detected_lang = detect_language(transcript)
-                                print(f"[Voicebot] 2. Detected Language: {call_detected_lang}")
-                                print(f"[Voicebot] Original language from CSV: {customer_info.get('lang', 'en-IN')}")
+                                logger.websocket.info(f"2. Detected Language from user response: {call_detected_lang}")
+                                logger.websocket.info(f"State-based language: {initial_greeting_language}")
+                                logger.websocket.info(f"CSV language: {csv_language}")
                                 
-                                # Check if detected language is different from CSV language
-                                if call_detected_lang != customer_info.get('lang', 'en-IN') and initial_greeting_played:
-                                    print(f"[Voicebot] Language mismatch detected. Replaying greeting in {call_detected_lang}")
+                                # Decide final language: use detected language if different from state language
+                                final_language = call_detected_lang
+                                
+                                # If user detected language is different from state language, acknowledge the switch
+                                if call_detected_lang != initial_greeting_language:
+                                    logger.websocket.info(f"User language ({call_detected_lang}) differs from state language ({initial_greeting_language}). Switching to user language.")
+                                    # Optionally replay greeting in detected language
                                     try:
                                         await greeting_template_play(websocket, customer_info, lang=call_detected_lang)
-                                        print(f"[Voicebot] ✅ Replayed greeting in {call_detected_lang}")
+                                        logger.websocket.info(f"✅ Replayed greeting in detected language: {call_detected_lang}")
                                     except Exception as e:
-                                        print(f"[Voicebot] ❌ Error replaying greeting: {e}")
+                                        logger.websocket.error(f"❌ Error replaying greeting in detected language: {e}")
+                                else:
+                                    logger.websocket.info(f"User language matches state language. Continuing with {final_language}")
                                 
-                                # Play EMI details in detected language
+                                # If no specific language detected, fallback to state language
+                                if call_detected_lang == "en-IN" and initial_greeting_language != "en-IN":
+                                    logger.websocket.info(f"No specific language detected from user. Using state language: {initial_greeting_language}")
+                                    final_language = initial_greeting_language
+                                
+                                # Update the detected language for further conversation
+                                call_detected_lang = final_language
+                                
+                                # Play EMI details in final determined language
                                 try:
                                     await play_emi_details_part1(websocket, customer_info or {}, call_detected_lang)
                                     await play_emi_details_part2(websocket, customer_info or {}, call_detected_lang)
                                     await play_agent_connect_question(websocket, call_detected_lang)
                                     conversation_stage = "WAITING_AGENT_RESPONSE"
-                                    print(f"[Voicebot] ✅ EMI details and agent question sent successfully in {call_detected_lang}")
+                                    logger.websocket.info(f"✅ EMI details and agent question sent successfully in {call_detected_lang}")
                                 except Exception as e:
-                                    print(f"[Voicebot] ❌ Error playing EMI details: {e}")
+                                    logger.websocket.error(f"❌ Error playing EMI details: {e}")
                             
                             elif conversation_stage == "WAITING_AGENT_RESPONSE":
                                 # Use Claude for intent detection
@@ -1015,26 +1094,30 @@ async def old_websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_text()
             msg = json.loads(data)
             event_type = msg.get('event', 'unknown')
-            print(f"[Compatibility] 📨 Received message: {event_type}")
             
-            # Log EVERY message completely for debugging
-            print(f"[Compatibility] 🔍 FULL MESSAGE DEBUG: {json.dumps(msg, indent=2)}")
+            # Log WebSocket message using the new logging system
+            logger.websocket.info(f"📨 Received message: {event_type}")
+            logger.log_websocket_message(event_type, msg, call_sid=call_sid, session_id=session_id)
+            
+            # Debug: Log complete message for troubleshooting
+            logger.websocket.debug(f"🔍 FULL MESSAGE DEBUG: {json.dumps(msg, indent=2)}")
 
             if msg.get("event") == "start":
-                print("[Compatibility] 🔁 Got start event - extracting CallSid and customer data")
+                logger.websocket.info("🔁 Got start event - extracting CallSid and customer data")
+                logger.log_call_event("START_MESSAGE_RECEIVED", call_sid or "unknown")
                 
-                # Debug: Print the full start message to see what Exotel is actually sending
-                print(f"[Compatibility] 🔍 FULL START MESSAGE DEBUG: {json.dumps(msg, indent=2)}")
+                # Debug: Log the full start message to see what Exotel is actually sending
+                logger.websocket.debug(f"🔍 FULL START MESSAGE DEBUG: {json.dumps(msg, indent=2)}")
                 
                 # Extract CallSid from the start message - this is how Exotel sends it
                 call_sid = None
                 # CRITICAL: Check the nested start structure first - this is where Exotel actually sends it
                 if 'start' in msg and 'call_sid' in msg['start']:
                     call_sid = msg['start']['call_sid']  # CRITICAL: This is where Exotel sends it!
-                    print(f"[Compatibility] 🎯 FOUND CallSid in start.call_sid: {call_sid}")
+                    logger.websocket.info(f"🎯 FOUND CallSid in start.call_sid: {call_sid}")
                 elif 'start' in msg and 'callSid' in msg['start']:
                     call_sid = msg['start']['callSid']
-                    print(f"[Compatibility] 🎯 FOUND CallSid in start.callSid: {call_sid}")
+                    logger.websocket.info(f"🎯 FOUND CallSid in start.callSid: {call_sid}")
                 elif 'callSid' in msg:
                     call_sid = msg['callSid']
                 elif 'CallSid' in msg:
@@ -1047,27 +1130,27 @@ async def old_websocket_endpoint(websocket: WebSocket):
                     call_sid = msg['stream']['callSid']
                 
                 # Debug: Check all possible locations for CallSid
-                print(f"[Compatibility] 🔍 Checking for CallSid in message fields:")
-                print(f"[Compatibility] 🔍 msg.get('callSid'): {msg.get('callSid')}")
-                print(f"[Compatibility] 🔍 msg.get('CallSid'): {msg.get('CallSid')}")
-                print(f"[Compatibility] 🔍 msg.get('call_sid'): {msg.get('call_sid')}")
-                print(f"[Compatibility] 🔍 msg.get('streamSid'): {msg.get('streamSid')}")
-                print(f"[Compatibility] 🔍 msg.get('stream'): {msg.get('stream')}")
-                print(f"[Compatibility] 🔍 msg.get('start'): {msg.get('start')}")
-                print(f"[Compatibility] 🔍 All msg keys: {list(msg.keys())}")
+                logger.websocket.debug("🔍 Checking for CallSid in message fields:")
+                logger.websocket.debug(f"🔍 msg.get('callSid'): {msg.get('callSid')}")
+                logger.websocket.debug(f"🔍 msg.get('CallSid'): {msg.get('CallSid')}")
+                logger.websocket.debug(f"🔍 msg.get('call_sid'): {msg.get('call_sid')}")
+                logger.websocket.debug(f"🔍 msg.get('streamSid'): {msg.get('streamSid')}")
+                logger.websocket.debug(f"🔍 msg.get('stream'): {msg.get('stream')}")
+                logger.websocket.debug(f"🔍 msg.get('start'): {msg.get('start')}")
+                logger.websocket.debug(f"🔍 All msg keys: {list(msg.keys())}")
                 
-                print(f"[Compatibility] ✅ Extracted CallSid from start message: {call_sid}")
+                logger.websocket.info(f"✅ Extracted CallSid from start message: {call_sid}")
                 
                 # Use CallSid as session_id
                 session_id = call_sid or generate_websocket_session_id()
                 
-                print(f"[Compatibility] Using session_id: {session_id}")
+                logger.websocket.info(f"Using session_id: {session_id}")
                 
                 # Now that we have the CallSid, try to get customer info from multiple sources
                 if not customer_info:
                     # 1. Try to get from Redis using CallSid
                     if call_sid:
-                        print(f"[Compatibility] Looking up customer data by CallSid: {call_sid}")
+                        logger.database.info(f"Looking up customer data by CallSid: {call_sid}")
                         redis_data = redis_manager.get_call_session(call_sid)
                         if redis_data:
                             customer_info = {
@@ -1079,11 +1162,12 @@ async def old_websocket_endpoint(websocket: WebSocket):
                                 'phone': redis_data.get('phone_number', ''),
                                 'state': redis_data.get('state', '')
                             }
-                            print(f"[Compatibility] ✅ Found customer data in Redis: {customer_info['name']}")
+                            logger.database.info(f"✅ Found customer data in Redis: {customer_info['name']}")
+                            logger.log_call_event("CUSTOMER_DATA_FOUND_REDIS", call_sid, customer_info['name'], customer_info)
                     
                     # 2. Try to get customer data from database by CallSid
                     if not customer_info and call_sid:
-                        print(f"[Compatibility] Looking up call session in database by CallSid: {call_sid}")
+                        logger.database.info(f"Looking up call session in database by CallSid: {call_sid}")
                         try:
                             session_db = db_manager.get_session()
                             call_session = get_call_session_by_sid(session_db, call_sid)
@@ -1100,14 +1184,16 @@ async def old_websocket_endpoint(websocket: WebSocket):
                                         'phone': customer.phone_number,
                                         'state': customer.state or ''
                                     }
-                                    print(f"[Compatibility] ✅ Found customer in database: {customer_info['name']}")
+                                    logger.database.info(f"✅ Found customer in database: {customer_info['name']}")
+                                    logger.log_call_event("CUSTOMER_DATA_FOUND_DATABASE", call_sid, customer_info['name'], customer_info)
                             session_db.close()
                         except Exception as e:
-                            print(f"[Compatibility] ❌ Error looking up customer in database: {e}")
+                            logger.database.error(f"❌ Error looking up customer in database: {e}")
                 
                 # 3. If no customer found, this is an error
                 if not customer_info:
-                    print("[Compatibility] ❌ No customer data found - cannot proceed without real customer information")
+                    logger.database.error("❌ No customer data found - cannot proceed without real customer information")
+                    logger.log_call_event("CUSTOMER_DATA_NOT_FOUND", call_sid)
                     await websocket.send_text(json.dumps({
                         "event": "error",
                         "message": "Customer data not found. Please ensure customer information is uploaded and call is triggered properly."
@@ -1118,7 +1204,8 @@ async def old_websocket_endpoint(websocket: WebSocket):
                 required_fields = ['name', 'loan_id', 'amount', 'due_date']
                 missing_fields = [field for field in required_fields if not customer_info.get(field)]
                 if missing_fields:
-                    print(f"[Compatibility] ❌ Customer data missing required fields: {missing_fields}")
+                    logger.database.error(f"❌ Customer data missing required fields: {missing_fields}")
+                    logger.log_call_event("CUSTOMER_DATA_INCOMPLETE", call_sid, customer_info['name'] if customer_info else 'Unknown', {"missing_fields": missing_fields})
                     await websocket.send_text(json.dumps({
                         "event": "error",
                         "message": f"Customer data incomplete. Missing fields: {', '.join(missing_fields)}"
@@ -1128,27 +1215,33 @@ async def old_websocket_endpoint(websocket: WebSocket):
                 print(f"[Compatibility] ✅ Customer data validated: {customer_info['name']} - Loan: {customer_info['loan_id']}, Amount: ₹{customer_info['amount']}")
                 
                 # Play initial greeting immediately when WebSocket starts
-                print(f"[Compatibility] 1. Playing initial greeting for {customer_info['name']} in {customer_info['lang']}")
+                logger.tts.info(f"1. Playing initial greeting for {customer_info['name']} in {customer_info['lang']}")
+                logger.log_call_event("INITIAL_GREETING_START", call_sid, customer_info['name'], {"language": customer_info['lang']})
                 try:
                     await greeting_template_play(websocket, customer_info, lang=customer_info['lang'])
-                    print(f"[Compatibility] ✅ Initial greeting played successfully in {customer_info['lang']}")
+                    logger.tts.info(f"✅ Initial greeting played successfully in {customer_info['lang']}")
+                    logger.log_call_event("INITIAL_GREETING_SUCCESS", call_sid, customer_info['name'], {"language": customer_info['lang']})
                     initial_greeting_played = True
                     conversation_stage = "WAITING_FOR_LANG_DETECT"
                 except Exception as e:
-                    print(f"[Compatibility] ❌ Error playing initial greeting: {e}")
+                    logger.tts.error(f"❌ Error playing initial greeting: {e}")
+                    logger.log_call_event("INITIAL_GREETING_ERROR", call_sid, customer_info['name'], {"error": str(e)})
                     # Try fallback simple greeting
                     try:
                         simple_greeting = f"Hello, this is South India Finvest Bank calling. Am I speaking with {customer_info['name']}?"
                         audio_bytes = await sarvam_handler.synthesize_tts(simple_greeting, "en-IN")
                         await stream_audio_to_websocket(websocket, audio_bytes)
-                        print("[Compatibility] ✅ Fallback greeting sent successfully")
+                        logger.tts.info("✅ Fallback greeting sent successfully")
+                        logger.log_call_event("FALLBACK_GREETING_SUCCESS", call_sid, customer_info['name'])
                         initial_greeting_played = True
                         conversation_stage = "WAITING_FOR_LANG_DETECT"
                     except Exception as fallback_e:
-                        print(f"[Compatibility] ❌ Error sending fallback greeting: {fallback_e}")
+                        logger.tts.error(f"❌ Error sending fallback greeting: {fallback_e}")
+                        logger.log_call_event("FALLBACK_GREETING_ERROR", call_sid, customer_info['name'], {"error": str(fallback_e)})
                 continue
 
             if msg.get("event") == "media":
+                logger.log_websocket_message("Received media event", msg)
                 payload_b64 = msg["media"]["payload"]
                 raw_audio = base64.b64decode(payload_b64)
 
@@ -1163,19 +1256,22 @@ async def old_websocket_endpoint(websocket: WebSocket):
                 if now - last_transcription_time >= BUFFER_DURATION_SECONDS:
                     if len(audio_buffer) == 0:
                         if conversation_stage == "WAITING_FOR_LANG_DETECT":
-                            print("[Compatibility] No audio received during language detection stage. Playing 'didn't hear' prompt.")
+                            logger.websocket.info("No audio received during language detection stage. Playing 'didn't hear' prompt.")
+                            logger.log_call_event("NO_AUDIO_LANG_DETECT", call_sid, customer_info['name'])
                             await play_did_not_hear_response(websocket, call_detected_lang)
                             # Reset the timer to wait for user response
                             last_transcription_time = time.time()
                         elif conversation_stage == "WAITING_AGENT_RESPONSE":
                             agent_question_repeat_count += 1
                             if agent_question_repeat_count <= 2:  # Limit to 2 repeats
-                                print(f"[Compatibility] No audio received during agent question stage. Repeating question (attempt {agent_question_repeat_count}/2).")
+                                logger.websocket.info(f"No audio received during agent question stage. Repeating question (attempt {agent_question_repeat_count}/2).")
+                                logger.log_call_event("AGENT_QUESTION_REPEAT", call_sid, customer_info['name'], {"attempt": agent_question_repeat_count})
                                 await play_agent_connect_question(websocket, call_detected_lang)
                                 # Reset the timer to wait for user response
                                 last_transcription_time = time.time()
                             else:
-                                print("[Compatibility] Too many no-audio responses. Assuming user wants agent transfer.")
+                                logger.websocket.info("Too many no-audio responses. Assuming user wants agent transfer.")
+                                logger.log_call_event("AUTO_AGENT_TRANSFER_NO_AUDIO", call_sid, customer_info['name'])
                                 customer_number = customer_info.get('phone', '08438019383') if customer_info else "08438019383"
                                 await play_transfer_to_agent(websocket, customer_number=customer_number) 
                                 conversation_stage = "TRANSFERRING_TO_AGENT"
@@ -1189,22 +1285,25 @@ async def old_websocket_endpoint(websocket: WebSocket):
 
                     try:
                         transcript = sarvam_handler.transcribe_from_payload(audio_buffer)
-                        print(f"[Compatibility ASR] 📝 Transcript: {transcript}")
+                        logger.websocket.info(f"📝 Transcript: {transcript}")
+                        logger.log_call_event("TRANSCRIPT_RECEIVED", call_sid, customer_info['name'], {"transcript": transcript, "stage": conversation_stage})
 
                         if transcript:
                             if conversation_stage == "WAITING_FOR_LANG_DETECT":
                                 call_detected_lang = detect_language(transcript)
-                                print(f"[Compatibility] 2. Detected Language: {call_detected_lang}")
-                                print(f"[Compatibility] Original language from CSV: {customer_info.get('lang', 'en-IN')}")
+                                logger.websocket.info(f"2. Detected Language: {call_detected_lang}")
+                                logger.websocket.info(f"Original language from CSV: {customer_info.get('lang', 'en-IN')}")
+                                logger.log_call_event("LANGUAGE_DETECTED", call_sid, customer_info['name'], {"detected_lang": call_detected_lang, "original_lang": customer_info.get('lang', 'en-IN')})
                                 
                                 # Check if detected language is different from CSV language
                                 if call_detected_lang != customer_info.get('lang', 'en-IN') and initial_greeting_played:
-                                    print(f"[Compatibility] Language mismatch detected. Replaying greeting in {call_detected_lang}")
+                                    logger.tts.info(f"Language mismatch detected. Replaying greeting in {call_detected_lang}")
+                                    logger.log_call_event("LANGUAGE_MISMATCH_REPLAY", call_sid, customer_info['name'], {"new_lang": call_detected_lang})
                                     try:
                                         await greeting_template_play(websocket, customer_info, lang=call_detected_lang)
-                                        print(f"[Compatibility] ✅ Replayed greeting in {call_detected_lang}")
+                                        logger.tts.info(f"✅ Replayed greeting in {call_detected_lang}")
                                     except Exception as e:
-                                        print(f"[Compatibility] ❌ Error replaying greeting: {e}")
+                                        logger.tts.error(f"❌ Error replaying greeting: {e}")
                                 
                                 # Play EMI details in detected language
                                 try:
@@ -1212,75 +1311,88 @@ async def old_websocket_endpoint(websocket: WebSocket):
                                     await play_emi_details_part2(websocket, customer_info or {}, call_detected_lang)
                                     await play_agent_connect_question(websocket, call_detected_lang)
                                     conversation_stage = "WAITING_AGENT_RESPONSE"
-                                    print(f"[Compatibility] ✅ EMI details and agent question sent successfully in {call_detected_lang}")
+                                    logger.tts.info(f"✅ EMI details and agent question sent successfully in {call_detected_lang}")
+                                    logger.log_call_event("EMI_DETAILS_SENT", call_sid, customer_info['name'], {"language": call_detected_lang})
                                 except Exception as e:
-                                    print(f"[Compatibility] ❌ Error playing EMI details: {e}")
+                                    logger.tts.error(f"❌ Error playing EMI details: {e}")
+                                    logger.log_call_event("EMI_DETAILS_ERROR", call_sid, customer_info['name'], {"error": str(e)})
                             
                             elif conversation_stage == "WAITING_AGENT_RESPONSE":
                                 # Use Claude for intent detection
                                 try:
                                     intent = detect_intent_with_claude(transcript, call_detected_lang)
-                                    print(f"[Compatibility] Claude detected intent: {intent}")
+                                    logger.websocket.info(f"Claude detected intent: {intent}")
+                                    logger.log_call_event("INTENT_DETECTED_CLAUDE", call_sid, customer_info['name'], {"intent": intent, "transcript": transcript})
                                 except Exception as e:
-                                    print(f"[Compatibility] ❌ Error in Claude intent detection: {e}")
+                                    logger.websocket.error(f"❌ Error in Claude intent detection: {e}")
                                     # Fallback to keyword-based detection
                                     intent = detect_intent_fur(transcript, call_detected_lang)
-                                    print(f"[Compatibility] Fallback intent detection: {intent}")
+                                    logger.websocket.info(f"Fallback intent detection: {intent}")
+                                    logger.log_call_event("INTENT_DETECTED_FALLBACK", call_sid, customer_info['name'], {"intent": intent, "transcript": transcript})
 
                                 if intent == "affirmative" or intent == "agent_transfer":
                                     if conversation_stage != "TRANSFERRING_TO_AGENT":  # Prevent multiple transfers
-                                        print("[Compatibility] User affirmed agent transfer. Initiating transfer.")
+                                        logger.websocket.info("User affirmed agent transfer. Initiating transfer.")
+                                        logger.log_call_event("AGENT_TRANSFER_INITIATED", call_sid, customer_info['name'], {"intent": intent})
                                         customer_number = customer_info.get('phone', '08438019383') if customer_info else "08438019383"
                                         await play_transfer_to_agent(websocket, customer_number=customer_number) 
                                         conversation_stage = "TRANSFERRING_TO_AGENT"
                                         interaction_complete = True
                                         await websocket.close()
-                                        print("[Compatibility-TRANSFERRING_TO_AGENT] 🔒 Closed")
+                                        logger.websocket.info("🔒 WebSocket closed after agent transfer")
+                                        logger.log_call_event("WEBSOCKET_CLOSED_AGENT_TRANSFER", call_sid, customer_info['name'])
                                         break
                                     else:
-                                        print("[Compatibility] ⚠️ Agent transfer already in progress, ignoring duplicate request")
+                                        logger.websocket.warning("⚠️ Agent transfer already in progress, ignoring duplicate request")
                                 elif intent == "negative":
                                     if conversation_stage != "GOODBYE_DECLINE":  # Prevent multiple goodbyes
-                                        print("[Compatibility] User declined agent transfer. Saying goodbye.")
+                                        logger.websocket.info("User declined agent transfer. Saying goodbye.")
+                                        logger.log_call_event("AGENT_TRANSFER_DECLINED", call_sid, customer_info['name'])
                                         await play_goodbye_after_decline(websocket, call_detected_lang)
                                         conversation_stage = "GOODBYE_DECLINE"
                                         interaction_complete = True
                                     else:
-                                        print("[Compatibility] ⚠️ Goodbye already sent, ignoring duplicate request")
+                                        logger.websocket.warning("⚠️ Goodbye already sent, ignoring duplicate request")
                                 else:
                                     agent_question_repeat_count += 1
                                     if agent_question_repeat_count <= 2:  # Limit to 2 repeats
-                                        print(f"[Compatibility] Unclear response to agent connect. Repeating question (attempt {agent_question_repeat_count}/2).")
+                                        logger.websocket.info(f"Unclear response to agent connect. Repeating question (attempt {agent_question_repeat_count}/2).")
+                                        logger.log_call_event("AGENT_QUESTION_UNCLEAR_REPEAT", call_sid, customer_info['name'], {"attempt": agent_question_repeat_count})
                                         await play_agent_connect_question(websocket, call_detected_lang)
                                         # Reset the timer to wait for user response
                                         last_transcription_time = time.time()
                                     else:
-                                        print("[Compatibility] Too many unclear responses. Assuming user wants agent transfer.")
+                                        logger.websocket.info("Too many unclear responses. Assuming user wants agent transfer.")
+                                        logger.log_call_event("AUTO_AGENT_TRANSFER_UNCLEAR", call_sid, customer_info['name'])
                                         customer_number = customer_info.get('phone', '08438019383') if customer_info else "08438019383"
                                         await play_transfer_to_agent(websocket, customer_number=customer_number) 
                                         conversation_stage = "TRANSFERRING_TO_AGENT"
                                         interaction_complete = True
                                         await websocket.close()
-                                        print("[Compatibility-TRANSFERRING_TO_AGENT] 🔒 Closed")
+                                        logger.websocket.info("🔒 WebSocket closed after auto agent transfer")
+                                        logger.log_call_event("WEBSOCKET_CLOSED_AUTO_TRANSFER", call_sid, customer_info['name'])
                                         break
                             # Add more elif conditions here for additional conversation stages if your flow extends
                     except Exception as e:
-                        print(f"[Compatibility] ❌ Error processing transcript: {e}")
+                        logger.websocket.error(f"❌ Error processing transcript: {e}")
+                        logger.log_call_event("TRANSCRIPT_PROCESSING_ERROR", call_sid, customer_info['name'] if customer_info else 'Unknown', {"error": str(e)})
 
                     audio_buffer.clear()
                     last_transcription_time = now
 
     except Exception as e:
-        print(f"[Compatibility Error] ❌ {e}")
+        logger.error.error(f"WebSocket compatibility error: {e}")
+        logger.log_call_event("WEBSOCKET_COMPATIBILITY_ERROR", call_sid or 'unknown', customer_info['name'] if customer_info else 'Unknown', {"error": str(e)})
     finally:
         # Ensure the websocket is closed gracefully
         if not websocket.client_state.name == 'DISCONNECTED':
             await websocket.close()
-        print("[Compatibility] 🔒 Closed")
+        logger.websocket.info("🔒 WebSocket connection closed gracefully")
+        logger.log_call_event("WEBSOCKET_CLOSED_GRACEFUL", call_sid or 'unknown', customer_info['name'] if customer_info else 'Unknown')
 
 
 if __name__ == "__main__":
-    print("Starting server directly from main.py")
+    logger.app.info("Starting server directly from main.py")
     import uvicorn
     uvicorn.run(
         "main:app",

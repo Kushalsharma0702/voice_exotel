@@ -1,0 +1,2 @@
+# This file ensures the logs directory is created in version control
+# Log files will be automatically created here by the logging system
